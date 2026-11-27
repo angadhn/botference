@@ -139,7 +139,9 @@ export function gapMove(gap, to, { text = '', reason = '', agent = '', model = '
     if (used) gap.used = String(used); else delete gap.used;
     // (`refused`: the fetches the run's permission rules refused, a notes run fetching from a host its line did not name)
     if (sources && (sources.web || sources.notes)) gap.sources = { web: (sources.web || []).map(String).slice(0, 50), notes: (sources.notes || []).map(String).slice(0, 50),
-      ...((sources.refused || []).length ? { refused: sources.refused.map(String).slice(0, 50) } : {}) }; else delete gap.sources;
+      ...((sources.refused || []).length ? { refused: sources.refused.map(String).slice(0, 50) } : {}),
+      // (`note`: one plain sentence about the run, e.g. oneshot FETCH_OFF_SAY)
+      ...(sources.note ? { note: String(sources.note).slice(0, 200) } : {}) }; else delete gap.sources;
     if (agent) gap.agent = agent;
     if (model) gap.model = String(model); else delete gap.model;
     gap.at = at;

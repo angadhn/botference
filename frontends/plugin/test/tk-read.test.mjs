@@ -91,7 +91,7 @@ test('botference tk-read check: says the roots and the hub link setting, every p
   const { main } = await import('../tk-read-cli.mjs');
   const home = tmp();
   fs.mkdirSync(path.join(home, 'Notes'));
-  const run = cfg => { const out = []; const code = main(['check'], { config: () => cfg, configPath: '/x/config.json', home, say: s => out.push(s) }); return { code, text: out.join('\n') }; };
+  const run = cfg => { const out = []; const code = main(['check'], { config: () => cfg, configPath: '/x/config.json', home, say: s => out.push(s), claudeVersion: () => O.CLAUDE_FETCH_RULES_VERSION }); return { code, text: out.join('\n') }; };
   const good = run({ tk_read_roots: [path.join(home, 'Notes')] });
   assert.equal(good.code, 0, good.text);
   assert.match(good.text, /Notes/);
@@ -114,7 +114,7 @@ test('ARGUMENTS for `none` are byte-identical to before (the changelog line); `w
   for (const t of ['Bash', 'Edit', 'Write', 'NotebookEdit', 'Read', 'Glob', 'Grep', 'Task', 'Agent', 'TodoWrite', 'mcp__*']) assert.ok(ws.deny.includes(t), t);
   assert.deepEqual(web.slice(8, 11), ['--output-format', 'stream-json', '--verbose']);
   assert.ok(!web.includes('--add-dir'));
-  const notes = O.oneshotCommand('claude', { caps: 'web+notes', roots: ['/r/one', '/r/two'], fetchHosts: ['www.example.com'] }).args;
+  const notes = O.oneshotCommand('claude', { caps: 'web+notes', roots: ['/r/one', '/r/two'], fetchHosts: ['www.example.com'] , cliVersion: O.CLAUDE_FETCH_RULES_VERSION }).args;
   assert.equal(notes[notes.indexOf('--tools') + 1], 'WebSearch,WebFetch,Read,Glob,Grep');
   const ns = JSON.parse(notes[notes.indexOf('--settings') + 1]).permissions;
   assert.deepEqual(ns.allow, ['WebSearch', 'WebFetch(domain:www.example.com)', 'Read', 'Glob', 'Grep']);
@@ -222,7 +222,7 @@ test('WHAT A PASSAGE USED is read from the stream (web addresses fetched, note p
   ];
   const rec = [];
   let jailed = null;
-  const r = await O.runOneShot('claude', 'p', { caps: 'web+notes', roots: ['/r/one'], spawn: streamSpawn(lines, rec), claudeJail: o => { jailed = o; return noJail(); } });
+  const r = await O.runOneShot('claude', 'p', { caps: 'web+notes', roots: ['/r/one'], spawn: streamSpawn(lines, rec), cliVersion: async () => O.CLAUDE_FETCH_RULES_VERSION, claudeJail: o => { jailed = o; return noJail(); } });
   // its own temporary folder (the CLI cannot start in the wrapper without one), given to the wrapper too; its own process group
   assert.ok(rec[0].o.env.CLAUDE_CODE_TMPDIR && rec[0].o.env.CLAUDE_CODE_TMPDIR === jailed.tmp && jailed.tmp !== jailed.work);
   assert.equal(rec[0].o.detached, true);
@@ -280,7 +280,7 @@ test('THE EVENTS ARE READ AS THEY ARRIVE and tool results are never kept: a 100 
     { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'r1', content: note }] } },
     { type: 'result', subtype: 'success', result: 'From the big note.' },
   ];
-  const r = await O.runOneShot('claude', 'p', { caps: 'web+notes', roots: ['/r/one'], spawn: chunkedSpawn(big, 1000), claudeJail: noJail });
+  const r = await O.runOneShot('claude', 'p', { caps: 'web+notes', roots: ['/r/one'], spawn: chunkedSpawn(big, 1000), cliVersion: async () => O.CLAUDE_FETCH_RULES_VERSION, claudeJail: noJail });
   assert.deepEqual([r.ok, r.text, r.used, r.sources.notes], [true, 'From the big note.', 'notes', ['/r/one/big.md']]);
   const many = [];
   for (let i = 0; i < 3000; i++) {
@@ -288,7 +288,7 @@ test('THE EVENTS ARE READ AS THEY ARRIVE and tool results are never kept: a 100 
     many.push({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `g${i}`, content: `/r/one/n${i}.md: a line of the note` }] } });
   }
   many.push({ type: 'result', subtype: 'success', result: 'After many searches.' });
-  const m = await O.runOneShot('claude', 'p', { caps: 'web+notes', roots: ['/r/one'], spawn: chunkedSpawn(many), claudeJail: noJail });
+  const m = await O.runOneShot('claude', 'p', { caps: 'web+notes', roots: ['/r/one'], spawn: chunkedSpawn(many), cliVersion: async () => O.CLAUDE_FETCH_RULES_VERSION, claudeJail: noJail });
   assert.deepEqual([m.ok, m.text, m.sources.notes.length], [true, 'After many searches.', O.STREAM_LIMITS.sources], 'the record is capped');
   // a line past lineBytes is skipped unread; the result after it still counts
   const giant = [JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'x', content: 'G'.repeat(O.STREAM_LIMITS.lineBytes + 10) }] } }),
@@ -309,7 +309,7 @@ test('WHERE A NOTES RUN MAY FETCH: only the hosts the owner\'s line names (WebFe
   assert.deepEqual(T.ownerHosts('Compare https://www.example.com/a?b=1 with news.example.org/story and www.example.net, not notes.md or 10.0.0.1/x or https://EXAMPLE.com:8443/x'),
     ['www.example.com', 'news.example.org', 'www.example.net', 'example.com']);
   assert.deepEqual(T.ownerHosts('/tk what do my notes say'), []);
-  const a = O.oneshotCommand('claude', { caps: 'web+notes', roots: ['/r'], fetchHosts: ['www.example.com', 'bad host', '-x.example.com'] }).args;
+  const a = O.oneshotCommand('claude', { caps: 'web+notes', roots: ['/r'], fetchHosts: ['www.example.com', 'bad host', '-x.example.com'] , cliVersion: O.CLAUDE_FETCH_RULES_VERSION }).args;
   const p = JSON.parse(a[a.indexOf('--settings') + 1]).permissions;
   assert.equal(a[a.indexOf('--tools') + 1], 'WebSearch,WebFetch,Read,Glob,Grep');
   assert.deepEqual(p.allow, ['WebSearch', 'WebFetch(domain:www.example.com)', 'Read', 'Glob', 'Grep'], 'never the bare WebFetch');
@@ -317,10 +317,10 @@ test('WHERE A NOTES RUN MAY FETCH: only the hosts the owner\'s line names (WebFe
   assert.ok(!p.deny.includes('WebFetch(domain:www.example.com)') && !p.deny.includes('WebFetch'));
   assert.equal(O.CLAUDE_PREAPPROVED_FETCH_HOSTS.length, 93);
   // a named host that is also pre-approved is not denied
-  const gh = JSON.parse(O.oneshotCommand('claude', { caps: 'web+notes', fetchHosts: ['github.com'] }).args.find(x => x.startsWith('{'))).permissions;
+  const gh = JSON.parse(O.oneshotCommand('claude', { caps: 'web+notes', fetchHosts: ['github.com'] , cliVersion: O.CLAUDE_FETCH_RULES_VERSION }).args.find(x => x.startsWith('{'))).permissions;
   assert.ok(!gh.deny.includes('WebFetch(domain:github.com)') && gh.allow.includes('WebFetch(domain:github.com)'));
   // no host named: no WebFetch at all
-  const none = O.oneshotCommand('claude', { caps: 'web+notes', roots: ['/r'] }).args;
+  const none = O.oneshotCommand('claude', { caps: 'web+notes', roots: ['/r'] , cliVersion: O.CLAUDE_FETCH_RULES_VERSION }).args;
   assert.equal(none[none.indexOf('--tools') + 1], 'WebSearch,Read,Glob,Grep');
   assert.ok(JSON.parse(none[none.indexOf('--settings') + 1]).permissions.deny.includes('WebFetch'));
   // web only: unrestricted, whatever hosts are passed
@@ -336,7 +336,7 @@ test('A REFUSED FETCH is kept in the private record (not as used); the search to
     { type: 'result', subtype: 'success', result: 'The passage.\n\nSources:\n- [A page](https://www.example.com/a)\n- https://www.example.com/b',
       permission_denials: [{ tool_name: 'WebFetch', tool_use_id: 'f2', tool_input: { url: 'https://other.example.net/' } }] },
   ];
-  const r = await O.runOneShot('claude', 'p', { caps: 'web+notes', roots: ['/r'], fetchHosts: ['www.example.com'], spawn: chunkedSpawn(lines), claudeJail: noJail });
+  const r = await O.runOneShot('claude', 'p', { caps: 'web+notes', roots: ['/r'], fetchHosts: ['www.example.com'], spawn: chunkedSpawn(lines), cliVersion: async () => O.CLAUDE_FETCH_RULES_VERSION, claudeJail: noJail });
   assert.equal(r.text, 'The passage.');
   assert.deepEqual(r.sources.refused, ['https://evil.example.net/?q=secret', 'https://other.example.net/']);
   assert.deepEqual(r.sources.web, ['https://www.example.com/a', 'https://www.example.com/b']);
@@ -349,4 +349,42 @@ test('A REFUSED FETCH is kept in the private record (not as used); the search to
     assert.equal(O.stripSourcesList(t).text, t.trim(), t);
   assert.match(G.capsGuidance('web+notes', ['/r']), /fetch pages only from the sites the instruction names/);
   assert.match(G.capsGuidance('web'), /Do not end with a list of sources/);
+});
+
+test('THE PRE-APPROVED HOST LIST IS FOR ONE CLI VERSION: a notes run on another version gets no WebFetch at all, with a plain private note; web-only runs are unaffected', async () => {
+  assert.equal(O.CLAUDE_FETCH_RULES_VERSION, '2.1.330');
+  assert.equal(O.parseClaudeVersion('2.1.330 (Claude Code)\n'), '2.1.330');
+  assert.equal(O.parseClaudeVersion('nonsense'), '');
+  const on = O.oneshotCommand('claude', { caps: 'web+notes', roots: ['/r'], fetchHosts: ['www.example.com'], cliVersion: '2.1.330' }).args;
+  assert.equal(on[on.indexOf('--tools') + 1], 'WebSearch,WebFetch,Read,Glob,Grep');
+  for (const v of ['2.1.331', '', undefined]) {
+    const off = O.oneshotCommand('claude', { caps: 'web+notes', roots: ['/r'], fetchHosts: ['www.example.com'], cliVersion: v }).args;
+    assert.equal(off[off.indexOf('--tools') + 1], 'WebSearch,Read,Glob,Grep', String(v));
+    assert.ok(JSON.parse(off[off.indexOf('--settings') + 1]).permissions.deny.includes('WebFetch'));
+  }
+  const web = O.oneshotCommand('claude', { caps: 'web', cliVersion: '9.9.9' }).args;
+  assert.equal(web[web.indexOf('--tools') + 1], 'WebSearch,WebFetch', 'web only: unaffected');
+  // the run asks the version once (cached by the caller's reader) and records why fetching was off
+  let asked = 0;
+  const lines = [{ type: 'result', subtype: 'success', result: 'Done.' }];
+  const rec = [];
+  const r = await O.runOneShot('claude', 'p', { caps: 'web+notes', roots: ['/r'], fetchHosts: ['www.example.com'], spawn: streamSpawn(lines, rec), cliVersion: async () => O.CLAUDE_FETCH_RULES_VERSION, claudeJail: noJail,
+    cliVersion: async () => { asked++; return '2.2.0'; } });
+  assert.equal(asked, 1);
+  assert.equal(rec[0].args[rec[0].args.indexOf('--tools') + 1], 'WebSearch,Read,Glob,Grep');
+  assert.equal(r.sources.note, O.FETCH_OFF_SAY);
+  assert.equal(O.FETCH_OFF_SAY, 'page fetching is off for notes runs on this version of Claude Code');
+  const gap = { id: 'g', kind: 'ask', agent: 'claude', instruction: 'x', mode: 'pending' };
+  G.gapMove(gap, 'filled-by-agent', { text: r.text, used: r.used, sources: r.sources });
+  assert.equal(gap.sources.note, O.FETCH_OFF_SAY);
+  const same = await O.runOneShot('claude', 'p', { caps: 'web+notes', roots: ['/r'], fetchHosts: ['www.example.com'], spawn: streamSpawn(lines), cliVersion: async () => O.CLAUDE_FETCH_RULES_VERSION, claudeJail: noJail, cliVersion: async () => '2.1.330' });
+  assert.equal(same.sources.note, undefined);
+  const w = await O.runOneShot('claude', 'p', { caps: 'web', spawn: streamSpawn(lines), claudeJail: noJail, cliVersion: async () => { throw new Error('never asked for a web-only run'); } });
+  assert.equal(w.ok, true);
+  // botference tk-read check says it
+  const { main } = await import('../tk-read-cli.mjs');
+  const home = tmp(); fs.mkdirSync(path.join(home, 'Notes'));
+  const say = v => { const out = []; main(['check'], { config: () => ({ tk_read_roots: [path.join(home, 'Notes')] }), configPath: '/x/config.json', home, say: s => out.push(s), claudeVersion: () => v }); return out.join('\n'); };
+  assert.match(say('2.2.0'), /page fetching is off for notes runs on this version of Claude Code \(2\.2\.0/);
+  assert.match(say('2.1.330'), /notes runs may fetch pages from the sites their line names/);
 });

@@ -36,7 +36,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn as realSpawn } from 'node:child_process';
+import { spawn as realSpawn, execFile, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { TK_CAPS_TIME_MS } from './tk-read.mjs';
 
@@ -131,6 +131,35 @@ export const CLAUDE_PREAPPROVED_FETCH_HOSTS = Object.freeze(['platform.claude.co
   'docs.aws.amazon.com', 'cloud.google.com', 'kubernetes.io', 'www.docker.com', 'www.terraform.io', 'www.ansible.com', 'vercel.com', 'docs.stripe.com',
   'docs.netlify.com', 'devcenter.heroku.com', 'dev.wix.com', 'cypress.io', 'selenium.dev', 'docs.unity.com', 'docs.unrealengine.com', 'git-scm.com',
   'nginx.org', 'httpd.apache.org']);
+// THE LIST ABOVE IS ONE VERSION'S: the deny rules match Claude Code 2.1.330 exactly. On any other version the CLI's own list may differ
+// (a site added to it would pass a notes run's fetch unasked), so a notes run there gets NO WebFetch at all (WebSearch still), and its
+// private record says so (FETCH_OFF_SAY); `botference tk-read check` says it too. Web-only runs are unaffected. The version is read
+// with `claude --version`, once per companion start (claudeVersion, cached), never per run.
+export const CLAUDE_FETCH_RULES_VERSION = '2.1.330';
+export const FETCH_OFF_SAY = 'page fetching is off for notes runs on this version of Claude Code';
+export const parseClaudeVersion = out => { const m = String(out || '').trim().match(/^(\d+\.\d+\.\d+)\b/); return m ? m[1] : ''; };
+const fetchRulesHold = v => v === CLAUDE_FETCH_RULES_VERSION;
+let versionOnce = null;
+/** The installed Claude Code's version ('' when it cannot be told), asked once per process and kept. */
+export function claudeVersion(env = process.env) {
+  if (!versionOnce) {
+    versionOnce = new Promise(resolve => {
+      const e = oneshotEnv('claude', env);
+      const bin = whichReal('claude', e);
+      if (!bin) { resolve(''); return; }
+      execFile(bin, ['--version'], { env: e, timeout: 15000, maxBuffer: 4096 }, (err, out) => resolve(err ? '' : parseClaudeVersion(out)));
+    });
+  }
+  return versionOnce;
+}
+/** The same, at once (for `botference tk-read check`). */
+export function claudeVersionSync(env = process.env) {
+  const e = oneshotEnv('claude', env);
+  const bin = whichReal('claude', e);
+  if (!bin) return '';
+  const r = spawnSync(bin, ['--version'], { env: e, timeout: 15000, encoding: 'utf8' });
+  return r.status === 0 ? parseClaudeVersion(r.stdout) : '';
+}
 const FETCH_HOST_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
 /** How long a one-shot may run: a run with tools reads and searches, so longer; never past the ceiling of its set (tk-read.mjs
  *  TK_CAPS_TIME_MS, the one place the limits are written). */
@@ -143,10 +172,11 @@ const DENY_ALL = ['Bash', 'Read', 'Edit', 'Write', 'NotebookEdit', 'Glob', 'Grep
 
 /** The command for a one-shot of `agent`, or null when there is none. `dir` is the fresh working folder, `out` the file codex
  *  writes its last message to (outside that folder). `fetchHosts`: for a notes run, the hosts its owner's line names (above). */
-export function oneshotCommand(agent, { model = '', effort = '', dir = '', out = '', caps = 'none', roots = [], fetchHosts = [] } = {}) {
+export function oneshotCommand(agent, { model = '', effort = '', dir = '', out = '', caps = 'none', roots = [], fetchHosts = [], cliVersion = '' } = {}) {
   if (agent === 'claude' && caps !== 'none') {
     const notes = caps === 'web+notes';
-    const hosts = notes ? [...new Set((fetchHosts || []).map(h => String(h).toLowerCase()).filter(h => FETCH_HOST_RE.test(h)))] : [];
+    // (a notes run on a CLI version whose pre-approved list is not the one above: no host, so no WebFetch)
+    const hosts = notes && fetchRulesHold(cliVersion) ? [...new Set((fetchHosts || []).map(h => String(h).toLowerCase()).filter(h => FETCH_HOST_RE.test(h)))] : [];
     const tools = (CAPS_TOOLS[caps] || []).filter(t => !(notes && t === 'WebFetch' && !hosts.length));
     const allow = tools.flatMap(t => (notes && t === 'WebFetch' ? hosts.map(h => `WebFetch(domain:${h})`) : [t]));
     const deny = [...DENY_ALWAYS, ...['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'].filter(t => !tools.includes(t)),
@@ -307,18 +337,23 @@ const RUN_MOVES = Object.freeze({ running: Object.freeze(['flooded', 'done']), f
  * The child is started as the leader of its own process group, so a run stopped (past its time, or flooding) is stopped whole: the
  * CLI and anything it started.
  */
-export function runOneShot(agent, prompt, { model = '', effort = '', timeoutMs = 0, maxBytes = 64 * 1024, spawn = realSpawn,
-  env: fromEnv = process.env, jail = codexJail, claudeJail: jailClaude = claudeJail, caps = 'none', roots = [], fetchHosts = [] } = {}) {
+export async function runOneShot(agent, prompt, { model = '', effort = '', timeoutMs = 0, maxBytes = 64 * 1024, spawn = realSpawn,
+  env: fromEnv = process.env, jail = codexJail, claudeJail: jailClaude = claudeJail, caps = 'none', roots = [], fetchHosts = [],
+  cliVersion: versionOf = () => claudeVersion(fromEnv) } = {}) {
   const limit = timeLimitFor(caps, timeoutMs || 0);
-  if (!ONESHOT_AGENTS.includes(agent)) return Promise.resolve({ ok: false, error: `${agent} cannot fill gaps here` });
+  if (!ONESHOT_AGENTS.includes(agent)) return { ok: false, error: `${agent} cannot fill gaps here` };
   // a model name is one argument and never a flag (store.mjs MODEL_RE says the same for what is stored)
-  if (/^-/.test(String(model))) return Promise.resolve({ ok: false, error: 'the model name may not begin with -' });
+  if (/^-/.test(String(model))) return { ok: false, error: 'the model name may not begin with -' };
+  // the CLI's version matters only to a notes run's fetch rules (asked only then; cached by claudeVersion)
+  let cliVersion = '';
+  if (agent === 'claude' && caps === 'web+notes') { try { cliVersion = String((await versionOf()) || ''); } catch { cliVersion = ''; } }
+  const fetchOff = agent === 'claude' && caps === 'web+notes' && !fetchRulesHold(cliVersion);
   return new Promise(resolve => {
     let dir = '';
     let outDir = '';
     try { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-oneshot-')); } catch { resolve({ ok: false, error: 'could not make a folder for the agent' }); return; }
     try { outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-oneshot-out-')); } catch { outDir = ''; }
-    const c = oneshotCommand(agent, { model, effort, dir, out: outDir ? path.join(outDir, 'last.txt') : '', caps, roots, fetchHosts });
+    const c = oneshotCommand(agent, { model, effort, dir, out: outDir ? path.join(outDir, 'last.txt') : '', caps, roots, fetchHosts, cliVersion });
     const drop = error => { for (const d of [dir, outDir]) if (d) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* temp */ } } resolve({ ok: false, error }); };
     if (!c || (c.lastMessage === '' && agent === 'codex')) { drop(`could not start ${agent}`); return; }
     const env = oneshotEnv(agent, fromEnv);
@@ -397,6 +432,7 @@ export function runOneShot(agent, prompt, { model = '', effort = '', timeoutMs =
         if (s.error) { done({ ok: false, error: s.error }); return; }
         text = s.text; usedOf = s.used;
       } else { text = out.toString('utf8').trim(); full = out.length >= maxBytes; }
+      if (usedOf && fetchOff) usedOf.sources.note = FETCH_OFF_SAY;
       const extra = usedOf ? { used: usedOf.used, sources: usedOf.sources } : {};
       if (code === 0 || (text && full)) { done(text ? { ok: true, text, ...(model ? { model } : {}), ...extra } : { ok: false, error: 'the agent wrote nothing' }); return; }
       done({ ok: false, error: `the agent stopped (exit ${code})` });

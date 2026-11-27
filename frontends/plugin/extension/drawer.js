@@ -3797,12 +3797,15 @@ ${bubbleShellHtml()}`;
     function gapUsedHtml(g) {
       const src = g && g.sources;
       const list = src ? [...(src.web || []), ...(src.notes || [])] : [];
-      // (fetches its rules refused: a run that read your notes fetches only from the sites your line names)
+      // (fetches its rules refused: a run that read your notes fetches only from the sites its instruction names; `note`: e.g. fetching off)
       const refused = src && Array.isArray(src.refused) ? src.refused : [];
-      if (!g || ((!g.used || g.used === 'none' || !list.length) && !refused.length)) return '';
-      const said = g.used === 'both' ? 'used the web and your notes' : g.used === 'web' ? 'used the web' : g.used === 'notes' ? 'used your notes' : 'tried to fetch a page';
+      const note = src && src.note ? String(src.note) : '';
+      if (!g || ((!g.used || g.used === 'none' || !list.length) && !refused.length && !note)) return '';
+      const said = g.used === 'both' ? 'used the web and your notes' : g.used === 'web' ? 'used the web' : g.used === 'notes' ? 'used your notes'
+        : refused.length ? 'tried to fetch a page' : 'about this passage';
       return `<details class="gapused"><summary>${esc(said)}</summary>${list.map(x => `<div class="gapsrc">${esc(String(x))}</div>`).join('')}`
-        + `${refused.map(x => `<div class="gapsrc">not fetched (not a site your line names): ${esc(String(x))}</div>`).join('')}</details>`;
+        + `${refused.map(x => `<div class="gapsrc">not fetched (not a site the instruction names): ${esc(String(x))}</div>`).join('')}`
+        + `${note ? `<div class="gapsrc">${esc(note)}</div>` : ''}</details>`;
     }
     function gapBodyHtml(target, r) {
       const text = String(r.text || '');

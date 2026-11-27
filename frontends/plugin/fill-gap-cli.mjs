@@ -16,7 +16,7 @@
 // escapes it. PLUGIN_ONESHOT_CMD (a JSON argv) replaces the agent's CLI in tests, as it does for the companion.
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
-import { runOneShot, codexJail, claudeJail, ONESHOT_AGENTS } from './oneshot.mjs';
+import { runOneShot, codexJail, claudeJail, ONESHOT_AGENTS, CLAUDE_FETCH_RULES_VERSION } from './oneshot.mjs';
 import { validateTkRead, tkCapsFor, ownerHosts } from './tk-read.mjs';
 import { draftPrompt, DRAFT_TASKS, GAP_LIMITS } from './tkgaps.mjs';
 import { CONFIG_PATH, MODEL_RE, EFFORT_RE } from './store.mjs';
@@ -79,7 +79,8 @@ function override(env) {
   const argv = JSON.parse(env.PLUGIN_ONESHOT_CMD);
   return { spawn: (cmd, args, o) => spawn(argv[0], [...argv.slice(1), cmd, ...args],
     { ...o, env: { ...o.env, ...(env.ONESHOT_LOG ? { ONESHOT_LOG: env.ONESHOT_LOG } : {}) } }),
-  jail: o => codexJail({ ...o, bin: 'codex' }), claudeJail: o => claudeJail({ ...o, bin: 'claude', install: '/usr/bin' }) };
+  jail: o => codexJail({ ...o, bin: 'codex' }), claudeJail: o => claudeJail({ ...o, bin: 'claude', install: '/usr/bin' }),
+  cliVersion: async () => env.PLUGIN_ONESHOT_CLAUDE_VERSION || CLAUDE_FETCH_RULES_VERSION };
 }
 
 async function main() {
