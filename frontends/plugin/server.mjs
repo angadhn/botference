@@ -45,7 +45,8 @@ import { renderTarget, studioLeftOut } from './studio-paste.mjs';
 import { quoteStyleOf, commentOrderOf, agentStyleOf, calloutTypeOf, RESPONSE_MODES, canRespond } from './note-quotes.mjs';
 import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps, MSG_CHANNELS, askForGap, gapMove, canGapMove,
   GAP_LIMITS, forGuest } from './tkgaps.mjs';
-import { runOneShot, codexJail } from './oneshot.mjs';
+import { runOneShot, codexJail, claudeJail } from './oneshot.mjs';
+import { validateTkRead, tkCapsFor } from './tk-read.mjs';
 import { spawn as spawnChild } from 'node:child_process';
 import { loadHostedAuth, createAccess, AccessConfigError, connectionRecord, connectionLive, verdictOfRequest } from './access.mjs';
 import { createHosted, hostedPeopleOf, isLocalDirect, sanitizeHandle, originVerdict, sourceRefusal, corsFor, hostVerdict, hostRefused, pageCsp, newNonce } from './hosted.mjs';
@@ -2262,12 +2263,13 @@ function tidyComment(page, { text, thread, quote, page_number, mark, model }) {
 // the page's own agent session; killed when the wait ends. PLUGIN_ONESHOT_CMD
 // (tests: a JSON argv array) replaces the bot's CLI, as PLUGIN_BRIDGE_CMD
 // replaces the bridge.
-function askGap(page, prompt, { agent = 'claude', timeoutMs = 90000 } = {}) {
+// (`caps`, `roots`: what the passage's agent may use, tk-read.mjs tkCapsFor; its time limit follows from the set, oneshot timeLimitFor)
+function askGap(page, prompt, { agent = 'claude', caps = 'none', roots = [] } = {}) {
   if (NO_AGENTS) return Promise.resolve({ ok: false, error: AGENTS_OFF_REASON });
   // the model and effort the owner set for that agent in the companion's own settings (the chat's /model and /effort); the model is
   // not invented when none is set, the effort is medium then
   const { model, effort } = agentSetting(agent);
-  return runOneShot(agent, prompt, { model, effort, timeoutMs, ...oneshotOverride() });
+  return runOneShot(agent, prompt, { model, effort, caps, roots, ...oneshotOverride() });
 }
 // (tests: PLUGIN_ONESHOT_CMD replaces the CLI; the stand-in is told where to log, which is the one name added to the child's minimal
 // environment, and the jail is made with the CLI's name, since the stand-in runs in its place)
@@ -2276,7 +2278,7 @@ function oneshotOverride() {
   if (!override) return {};
   return { spawn: (cmd, args, o) => spawnChild(override[0], [...override.slice(1), cmd, ...args],
     { ...o, env: { ...o.env, ...(process.env.ONESHOT_LOG ? { ONESHOT_LOG: process.env.ONESHOT_LOG } : {}) } }),
-  jail: o => codexJail({ ...o, bin: 'codex' }) };
+  jail: o => codexJail({ ...o, bin: 'codex' }), claudeJail: o => claudeJail({ ...o, bin: 'claude', install: '/usr/bin' }) };
 }
 function agentSetting(agent) {
   const a = store.readConfig().agents || {};
@@ -3224,7 +3226,10 @@ async function fillEach(url, target, ts, ids, token) {
       budget.spend();
       const thread = target && target !== store.PAGE_CHAT ? store.findThread(page, target) : null;
       const item = page.blyg && page.blyg.status === 'blyg' ? page.blyg.item : null;
-      r = await askForGap({ gap, msgText: msg.text, quote: thread ? thread.quote : '', page, agent,
+      // WHAT THE PASSAGE'S AGENT MAY USE: one choice, from the settings, the agent and the door the line came through (tk-read.mjs)
+      const read = validateTkRead(store.readConfig());
+      const caps = tkCapsFor({ read, agent, channel: msg.channel || 'api' });
+      r = await askForGap({ gap, msgText: msg.text, quote: thread ? thread.quote : '', page, agent, caps, roots: caps === 'web+notes' ? read.roots : [],
         post: item ? { id: item.id, version: item.version, origin: item.origin } : null,
         ask: (prompt, o) => askGap(page, prompt, o) });
     }
@@ -3235,7 +3240,7 @@ async function fillEach(url, target, ts, ids, token) {
     const g2 = m2 && (m2.gaps || []).find(g => g.id === id);
     fillDrop(fillKey(url, target, ts, id), token);
     if (!g2 || g2.mode !== 'pending' || g2.instruction !== gap.instruction) continue;
-    if (r.mode === 'filled-by-agent') gapMove(g2, 'filled-by-agent', { text: r.text, agent, model: r.model || '', at: r.at });
+    if (r.mode === 'filled-by-agent') gapMove(g2, 'filled-by-agent', { text: r.text, agent, model: r.model || '', at: r.at, used: r.used || '', sources: r.sources || null });
     else gapMove(g2, 'failed', { reason: r.reason });
     store.savePage(latest);
     broadcast({ type: 'page', url: latest.url });

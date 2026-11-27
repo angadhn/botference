@@ -38,6 +38,7 @@ import { isPublishableMsg } from './blyg-note.mjs';
 import { audioTypeOf, sniffAudio, SPEECH_LIMITS } from './hub-speech.mjs';
 import { pagesOf, bodyText } from './clippings.mjs';
 const CLIPPING_ID_RE = /^[0-9a-f]{16}$/;
+const TK_USED_WORDS = Object.freeze(['none', 'web', 'notes', 'both']);
 // (what `earlier` answers: public facts of zero or one post)
 const earlierView = list => (list || []).filter(e => e && e.post).map(e => ({ id: String(e.post), address: String(e.address || ''), permalink: String(e.permalink || ''),
   title: String(e.title || '').slice(0, 120), date: String(e.date || ''), version: Number(e.version) || 1 }));
@@ -182,7 +183,8 @@ export function blocksOf(msg, { jsonBytes = HUB_LINK_LIMITS.blocksJsonBytes } = 
     at = m.end;
     const g = gaps[i];
     if (!g || g.mode === 'removed') return;
-    all.push({ kind: 'agent', id: String(g.id), instruction: String(g.instruction || '').slice(0, 1000), state: String(g.mode), text: String(g.text || ''),
+    // (`used`: the plain word of what the passage used, oneshot TK_USED; where from (addresses, note paths) stays on the computer)
+    all.push({ kind: 'agent', id: String(g.id), instruction: String(g.instruction || '').slice(0, 1000), state: String(g.mode), ...(TK_USED_WORDS.includes(g.used) ? { used: g.used } : {}), text: String(g.text || ''),
       model: String(g.model || '').slice(0, 100), at: String(g.at || '').slice(0, 40), ...(g.mode === 'failed' ? { reason: scrubPaths(g.reason).slice(0, 300) } : {}) });
   });
   own(text.slice(at));

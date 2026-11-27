@@ -96,19 +96,46 @@ export function codexJail({ env = process.env, work, out, platform = process.pla
 }
 // the efforts each CLI is given (the owner's chat setting; medium when none is set)
 export const DEFAULT_EFFORT = 'medium';
+
+// ---- WHAT A `/tk` PASSAGE MAY USE (tk-read.mjs TK_CAPS): the tools each capability set allows, by the CLI's own controls -----------
+// Claude: an explicit allow-list (`--tools`, and the same names allowed in --settings with every other tool denied), `--restricted`
+// (no command-running tools; no user, project or local settings files; the file tools confined to the working folder and the
+// `--add-dir` folders), `--strict-mcp-config` with none given (no MCP servers), `--no-session-persistence` (nothing saved), and the
+// stream of events (`--output-format stream-json --verbose`) so what it fetched and read can be recorded. Verified against
+// `claude --help` (2.1.330) on the owner's machine, 2026-11-27.
+export const CAPS_TOOLS = Object.freeze({ none: Object.freeze([]), web: Object.freeze(['WebSearch', 'WebFetch']),
+  'web+notes': Object.freeze(['WebSearch', 'WebFetch', 'Read', 'Glob', 'Grep']) });
+const DENY_ALWAYS = ['Bash', 'Edit', 'Write', 'NotebookEdit', 'Task', 'Agent', 'TodoWrite', 'mcp__*'];
+/** How long a one-shot may run: a run with tools reads and searches, so longer; never past the ceiling of its set. */
+export function timeLimitFor(caps, asked = 0) {
+  const ceiling = caps === 'none' ? 90000 : 180000;
+  return asked > 0 ? Math.min(asked, ceiling) : ceiling;
+}
 const DENY_ALL = ['Bash', 'Read', 'Edit', 'Write', 'NotebookEdit', 'Glob', 'Grep', 'WebFetch', 'WebSearch',
   'Task', 'Agent', 'TodoWrite', 'mcp__*'];
 
 /** The command for a one-shot of `agent`, or null when there is none. `dir` is the fresh working folder, `out` the file codex
  *  writes its last message to (outside that folder). */
-export function oneshotCommand(agent, { model = '', effort = '', dir = '', out = '' } = {}) {
+export function oneshotCommand(agent, { model = '', effort = '', dir = '', out = '', caps = 'none', roots = [] } = {}) {
+  if (agent === 'claude' && caps !== 'none') {
+    const tools = CAPS_TOOLS[caps] || [];
+    const deny = [...DENY_ALWAYS, ...['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'].filter(t => !tools.includes(t))];
+    return { cmd: 'claude', stream: true, args: ['-p', '--tools', tools.join(','), '--strict-mcp-config', '--restricted', '--no-session-persistence',
+      '--settings', JSON.stringify({ permissions: { defaultMode: 'dontAsk', allow: tools.slice(), deny } }),
+      '--output-format', 'stream-json', '--verbose',
+      ...(caps === 'web+notes' ? roots.flatMap(r => ['--add-dir', String(r)]) : []),
+      ...(model ? [`--model=${String(model)}`] : []), ...(effort ? [`--effort=${String(effort)}`] : [])] };
+  }
   if (agent === 'claude') {
     return { cmd: 'claude', args: ['-p', '--tools', '', '--strict-mcp-config', '--restricted',
       '--settings', JSON.stringify({ permissions: { defaultMode: 'dontAsk', allow: [], deny: DENY_ALL } }),
       '--output-format', 'text', ...(model ? [`--model=${String(model)}`] : []), ...(effort ? [`--effort=${String(effort)}`] : [])] };
   }
   if (agent === 'codex') {
-    return { cmd: 'codex', args: ['exec', ...CODEX_LOCKDOWN, '--cd', dir, '-o', out,
+    // (web: the model provider's own search tool, run on its side; Codex reads files only through its shell, which it never gets, so
+    // it is never given notes. `--json`: its events on stdout, to record what it searched)
+    const lock = caps === 'none' ? CODEX_LOCKDOWN : CODEX_LOCKDOWN.map(a => (a === 'web_search="disabled"' ? 'web_search="live"' : a));
+    return { cmd: 'codex', args: ['exec', ...lock, ...(caps === 'none' ? [] : ['--json']), '--cd', dir, '-o', out,
       ...(model ? [`--model=${String(model)}`] : []), '-c', `model_reasoning_effort="${String(effort || DEFAULT_EFFORT).replace(/[^\w-]/g, '')}"`, '-'],
       lastMessage: out };
   }
@@ -120,8 +147,9 @@ export function oneshotCommand(agent, { model = '', effort = '', dir = '', out =
  * `spawn` is injectable for the tests (a stand-in that records what it was
  * given and answers, or never answers).
  */
-export function runOneShot(agent, prompt, { model = '', effort = '', timeoutMs = 60000, maxBytes = 64 * 1024, spawn = realSpawn,
-  env: fromEnv = process.env, jail = codexJail } = {}) {
+export function runOneShot(agent, prompt, { model = '', effort = '', timeoutMs = 0, maxBytes = 64 * 1024, spawn = realSpawn,
+  env: fromEnv = process.env, jail = codexJail, claudeJail: jailClaude = claudeJail, caps = 'none', roots = [] } = {}) {
+  const limit = timeLimitFor(caps, timeoutMs || 0);
   if (!ONESHOT_AGENTS.includes(agent)) return Promise.resolve({ ok: false, error: `${agent} cannot fill gaps here` });
   // a model name is one argument and never a flag (store.mjs MODEL_RE says the same for what is stored)
   if (/^-/.test(String(model))) return Promise.resolve({ ok: false, error: 'the model name may not begin with -' });
@@ -130,7 +158,7 @@ export function runOneShot(agent, prompt, { model = '', effort = '', timeoutMs =
     let outDir = '';
     try { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-oneshot-')); } catch { resolve({ ok: false, error: 'could not make a folder for the agent' }); return; }
     try { outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-oneshot-out-')); } catch { outDir = ''; }
-    const c = oneshotCommand(agent, { model, effort, dir, out: outDir ? path.join(outDir, 'last.txt') : '' });
+    const c = oneshotCommand(agent, { model, effort, dir, out: outDir ? path.join(outDir, 'last.txt') : '', caps, roots });
     const drop = error => { for (const d of [dir, outDir]) if (d) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* temp */ } } resolve({ ok: false, error }); };
     if (!c || (c.lastMessage === '' && agent === 'codex')) { drop(`could not start ${agent}`); return; }
     const env = oneshotEnv(agent, fromEnv);
@@ -138,6 +166,13 @@ export function runOneShot(agent, prompt, { model = '', effort = '', timeoutMs =
       // jailed, or not run at all
       const j = jail({ env, work: dir, out: outDir });
       if (!j || !j.ok) { drop((j && j.error) || CODEX_UNCONTAINED); return; }
+      c.args = [...j.argv.slice(1), ...c.args];
+      c.cmd = j.argv[0];
+    }
+    if (agent === 'claude' && caps !== 'none') {
+      // with tools, Claude is wrapped too (claudeJail): it writes nowhere but its own folders and starts no other program
+      const j = jailClaude({ env, work: dir, roots: caps === 'web+notes' ? roots : [] });
+      if (!j || !j.ok) { drop((j && j.error) || CLAUDE_UNCONTAINED); return; }
       c.args = [...j.argv.slice(1), ...c.args];
       c.cmd = j.argv[0];
     }
@@ -153,7 +188,7 @@ export function runOneShot(agent, prompt, { model = '', effort = '', timeoutMs =
       resolve(r);
     };
     // the wait abandoned is the run stopped: nothing keeps running (or billing)
-    const timer = setTimeout(() => { try { child && child.kill('SIGKILL'); } catch { /* gone */ } done({ ok: false, error: 'the agent took too long' }); }, timeoutMs);
+    const timer = setTimeout(() => { try { child && child.kill('SIGKILL'); } catch { /* gone */ } done({ ok: false, error: caps === 'none' ? 'the agent took too long' : `the agent took too long (the limit is ${limit >= 1000 ? `${Math.round(limit / 1000)} s` : `${limit} ms`})` }); }, limit);
     try { child = spawn(c.cmd, c.args, { cwd: dir, env, stdio: ['pipe', 'pipe', 'ignore'] }); }
     catch (e) { done({ ok: false, error: `could not start ${agent}` }); return; }
     child.on('error', () => done({ ok: false, error: `could not start ${agent}` }));
@@ -166,13 +201,102 @@ export function runOneShot(agent, prompt, { model = '', effort = '', timeoutMs =
       if (settled) return;
       let text = '';
       let full = false;
+      let usedOf = null;
       if (c.lastMessage) {
         // codex: the last message only, from its own file, as text, under the same cap
         try { const buf = fs.readFileSync(c.lastMessage); full = buf.length >= maxBytes; text = buf.subarray(0, maxBytes).toString('utf8').trim(); } catch { text = ''; }
+        if (caps !== 'none') usedOf = usedFromCodex(out.toString('utf8'));
+      } else if (c.stream) {
+        // claude with tools: its events, one JSON object a line; the text is the final result's, and the tools it used are recorded
+        const s = readStream(out.toString('utf8'));
+        if (s.error) { done({ ok: false, error: s.error }); return; }
+        text = s.text; usedOf = s.used; full = out.length >= maxBytes;
       } else { text = out.toString('utf8').trim(); full = out.length >= maxBytes; }
-      if (code === 0 || (text && full)) done(text ? { ok: true, text, ...(model ? { model } : {}) } : { ok: false, error: 'the agent wrote nothing' });
-      else done({ ok: false, error: `the agent stopped (exit ${code})` });
+      const extra = usedOf ? { used: usedOf.used, sources: usedOf.sources } : {};
+      if (code === 0 || (text && full)) { done(text ? { ok: true, text, ...(model ? { model } : {}), ...extra } : { ok: false, error: 'the agent wrote nothing' }); return; }
+      done({ ok: false, error: `the agent stopped (exit ${code})` });
     });
     try { child.stdin.end(String(prompt)); } catch { /* the close handler answers */ }
   });
+}
+
+// ---- what a passage used, from the CLI's own events (kept privately on the gap; never in the post) ---------------------------------
+export const TK_USED = Object.freeze(['none', 'web', 'notes', 'both']);
+const usedOfSources = sources => (sources.web.length && sources.notes.length ? 'both' : sources.web.length ? 'web' : sources.notes.length ? 'notes' : 'none');
+const clip = (v, n = 500) => String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, n);
+/** Claude's stream (`--output-format stream-json --verbose`): → { text, used: { used, sources } } or { error } */
+export function readStream(raw) {
+  const sources = { web: [], notes: [] };
+  let result = null;
+  for (const line of String(raw).split('\n')) {
+    if (!line.trim()) continue;
+    let ev;
+    try { ev = JSON.parse(line); } catch { continue; }
+    if (ev && ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
+      for (const b of ev.message.content) {
+        if (!b || b.type !== 'tool_use' || !b.input) continue;
+        if (b.name === 'WebFetch' && b.input.url) sources.web.push(clip(b.input.url));
+        else if (b.name === 'WebSearch' && b.input.query) sources.web.push(`search: ${clip(b.input.query, 200)}`);
+        else if (b.name === 'Read' && b.input.file_path) sources.notes.push(clip(b.input.file_path));
+        else if ((b.name === 'Glob' || b.name === 'Grep') && (b.input.path || b.input.pattern)) sources.notes.push(clip(`${b.name.toLowerCase()}: ${b.input.path || ''} ${b.input.pattern || ''}`.trim()));
+      }
+    }
+    if (ev && ev.type === 'result') result = ev;
+  }
+  for (const k of ['web', 'notes']) sources[k] = [...new Set(sources[k])].slice(0, 50);
+  if (!result) return { error: 'the agent wrote nothing' };
+  if (result.is_error || result.subtype !== 'success' || typeof result.result !== 'string') return { error: 'the agent stopped before it finished' };
+  return { text: result.result.trim(), used: { used: usedOfSources(sources), sources } };
+}
+/** Codex's events (`--json`): searches recorded where its events name them (best effort: the event format is the CLI's) */
+export function usedFromCodex(raw) {
+  const sources = { web: [], notes: [] };
+  for (const line of String(raw).split('\n')) {
+    let ev;
+    try { ev = JSON.parse(line); } catch { continue; }
+    const item = ev && (ev.item || ev.msg || ev);
+    const kind = String((item && (item.type || item.item_type)) || '');
+    if (/web_search/.test(kind)) sources.web.push(`search: ${clip(item.query || (item.action && item.action.query) || '', 200)}`);
+  }
+  sources.web = [...new Set(sources.web)].slice(0, 50);
+  return { used: usedOfSources(sources), sources };
+}
+
+// ---- THE CLAUDE WRAPPER (macOS seatbelt), for a run with tools ------------------------------------------------------------------------
+// What it makes true at the OS level, whatever the CLI does: NO WRITE anywhere but the run's own folder, the CLI's own folder and its
+// state file (~/.claude, ~/.claude.json: the CLI writes them as it runs); NO PROGRAM but the CLI's own install; NO READ of the secret
+// places (SECRET_PLACES) or of other temporary folders. Reads elsewhere under the home folder are NOT refused at this level: Claude's
+// sign-in reads files under the home folder that cannot be listed here (a profile limiting reads to the CLI's folders and the roots
+// left it signed out), so "no read outside the roots" rests on the CLI's own confinement (--restricted: its file tools see only the
+// working folder and the --add-dir roots) and on its tools being only Read, Glob and Grep. The network is allowed (web search).
+export const CLAUDE_UNCONTAINED = 'Claude cannot be contained on this system';
+export const SECRET_PLACES = Object.freeze(['.ssh', '.botference', '.botference-backup', '.blyg-inbox-token', '.aws', '.gnupg', '.codex', '.supabase',
+  '.cloudflared', '.netrc', '.npmrc', '.pypirc', '.docker', '.kube', 'Library/Keychains']);
+const SAFE_PROFILE_PATH = /^\/[A-Za-z0-9 ._@+,()'&~/-]+$/;
+const q = p => { if (!SAFE_PROFILE_PATH.test(p) || /["\\]/.test(p)) throw new Error('a path a sandbox rule cannot hold'); return `"${p}"`; };
+const reEsc = p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** → { ok: true, argv } (sandbox-exec -p <profile> <claude>) or { ok: false, error }. `install`: the CLI's own folder (tests: a stub's). */
+export function claudeJail({ env = process.env, work, roots = [], platform = process.platform, sandboxExec = SANDBOX_EXEC, bin = '', install = '' } = {}) {
+  if (platform !== 'darwin' || !fs.existsSync(sandboxExec)) return { ok: false, error: CLAUDE_UNCONTAINED };
+  const home = env.HOME ? realOr(env.HOME) : '';
+  if (!home || !path.isAbsolute(home)) return { ok: false, error: CLAUDE_UNCONTAINED };
+  const cli = bin || whichReal('claude', env);
+  if (!cli) return { ok: false, error: 'could not start claude' };
+  const dir = install || path.dirname(cli);
+  const cliHome = realOr(env.CLAUDE_CONFIG_DIR || path.join(home, '.claude'));
+  let profile;
+  try {
+    profile = [
+      '(version 1)',
+      '; oneshot.mjs claudeJail: a /tk passage\'s Claude with tools (see the comment there for what it does and does not refuse)',
+      '(allow default)',
+      `(deny file-read* ${SECRET_PLACES.map(s => `(subpath ${q(path.join(home, s))})`).join(' ')} (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/private/var/tmp"))`,
+      `(allow file-read* (subpath ${q(realOr(work))})${roots.map(r => ` (subpath ${q(realOr(r))})`).join('')})`,
+      '(deny file-write*)',
+      `(allow file-write* (subpath ${q(realOr(work))}) (subpath ${q(cliHome)}) (regex #"^${reEsc(home)}/\\.claude\\.json") (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper"))`,
+      '(deny process-exec)',
+      `(allow process-exec (subpath ${q(realOr(dir))}))`,
+    ].join('\n');
+  } catch (e) { return { ok: false, error: CLAUDE_UNCONTAINED }; }
+  return { ok: true, argv: [sandboxExec, '-p', profile, cli] };
 }

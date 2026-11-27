@@ -12,5 +12,7 @@ process.stdin.on('end', () => {
   fs.appendFileSync(log, JSON.stringify({ n, input: input.length }) + '\n');
   let delays = [];
   try { delays = JSON.parse(fs.readFileSync(`${log}.delays`, 'utf8')); } catch { delays = []; }
-  setTimeout(() => process.stdout.write(`FILL ${n}\n`), Number(delays[n]) || 0);
+  // (claude with tools answers as `--output-format stream-json` does)
+  const answer = process.argv.includes('stream-json') ? `${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: `FILL ${n}` })}\n` : `FILL ${n}\n`;
+  setTimeout(() => process.stdout.write(answer), Number(delays[n]) || 0);
 });

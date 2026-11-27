@@ -16,7 +16,8 @@
 // escapes it. PLUGIN_ONESHOT_CMD (a JSON argv) replaces the agent's CLI in tests, as it does for the companion.
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
-import { runOneShot, codexJail, ONESHOT_AGENTS } from './oneshot.mjs';
+import { runOneShot, codexJail, claudeJail, ONESHOT_AGENTS } from './oneshot.mjs';
+import { validateTkRead, tkCapsFor } from './tk-read.mjs';
 import { draftPrompt, DRAFT_TASKS, GAP_LIMITS } from './tkgaps.mjs';
 import { CONFIG_PATH, MODEL_RE, EFFORT_RE } from './store.mjs';
 import { readJsonState } from './fsjson.mjs';
@@ -57,8 +58,13 @@ const firstWords = (t, n) => { const w = t.split(/\s+/); return w.length <= n ? 
 /** One answer. → { text, model?, at } | { error } */
 export async function fillGap(req, { env = process.env, config = CONFIG_PATH, now = Date.now } = {}) {
   const { model, effort } = agentSetting(req.agent, config);
-  const prompt = draftPrompt({ task: req.task, instruction: req.instruction, context: req.context, words: req.words, inline: req.inline });
-  const r = await runOneShot(req.agent, prompt, { model, effort, timeoutMs: GAP_LIMITS.perGapMs, env, ...override(env) });
+  // what the agent may use: the same capability set as a /tk passage written on this machine (channel api), from the same settings
+  const got = readJsonState(config);
+  const read = validateTkRead(got.state === 'ok' ? got.value : {});
+  const caps = tkCapsFor({ read, agent: req.agent, channel: 'api' });
+  const roots = caps === 'web+notes' ? read.roots : [];
+  const prompt = draftPrompt({ task: req.task, instruction: req.instruction, context: req.context, words: req.words, inline: req.inline, caps, roots });
+  const r = await runOneShot(req.agent, prompt, { model, effort, env, caps, roots, ...override(env) });
   let text = r && r.ok ? String(r.text || '').trim().slice(0, GAP_LIMITS.outputChars) : '';
   if (req.task === 'note') text = firstWords(text, NOTE_WORDS);
   if (!text) return { error: (r && r.error) || 'the agent wrote nothing' };
@@ -71,7 +77,7 @@ function override(env) {
   const argv = JSON.parse(env.PLUGIN_ONESHOT_CMD);
   return { spawn: (cmd, args, o) => spawn(argv[0], [...argv.slice(1), cmd, ...args],
     { ...o, env: { ...o.env, ...(env.ONESHOT_LOG ? { ONESHOT_LOG: env.ONESHOT_LOG } : {}) } }),
-  jail: o => codexJail({ ...o, bin: 'codex' }) };
+  jail: o => codexJail({ ...o, bin: 'codex' }), claudeJail: o => claudeJail({ ...o, bin: 'claude', install: '/usr/bin' }) };
 }
 
 async function main() {
