@@ -1192,7 +1192,10 @@ it, the agent may search the web, and read (only read) the notes in the
 folders you list in `"tk_read_roots"` (`botference tk-read check`; none by
 default). It can never write, edit or delete a file, run a command, or use
 MCP servers, and it runs inside a macOS sandbox that refuses writes. Codex
-searches the web but cannot read your notes. A line sent from your Hub reads
+reads the same folders through a read-only notes reader the companion gives
+it (on Codex CLI 0.167.2; otherwise the web only). Ask for "a backlink to my
+essay on X" and the passage links to one of your published posts, from the
+list your site prints (`botference blyg-home links`). A line sent from your Hub reads
 notes only if `"hub_link_tk_notes": "on"` (decided by who wrote the
 instruction). A passage that read your notes fetches pages only from sites
 its `/tk` instruction names (none on a Claude Code other than 2.1.330), and its post always waits for your look before it is

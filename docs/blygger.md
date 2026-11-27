@@ -263,8 +263,11 @@ the companion's `config.json`:
 with none set, passages search the web only. The agent can never write, edit,
 create or delete a file, run a command or a program, or use MCP servers: its
 text is its only output, and it runs in a macOS sandbox that refuses writes
-and other programs. Codex can search the web but cannot read your notes (it
-reads files only through a shell, which it never gets). A line sent from your
+and other programs. Codex reads the same folders, only through a small
+read-only notes reader the companion gives it (three tools: list a folder,
+read a file, find words; it never gets a shell), and only on the version of
+the Codex CLI this was checked on (0.167.2; on another version a Codex
+passage runs with the web only, and `botference tk-read check` says so). A line sent from your
 Hub may read notes only when `"hub_link_tk_notes": "on"` (off by default:
 anyone holding your Hub's link key could otherwise ask a passage to print your
 notes and read it back). Whether a passage may read notes depends on who wrote
@@ -366,6 +369,66 @@ How a gap is written in the note is one setting, `gap_style`:
 
 A passage you made yours ("mine") is written as your own words in both
 styles, with no mark; a removed one is not written at all.
+
+### Backlinks to your own published posts
+
+In a `/tk-claude` or `/tk-codex` line you can ask for a link to something you
+have published, in your own words: "use a backlink to my essay on harbour
+cranes to explain this". The passage then holds a wikilink,
+`[[Harbour cranes|my essay on harbour cranes]]`, and your site makes it a real
+link when the post is published.
+
+The agent learns what it may link to from a **catalogue of your published
+posts**, which your site prints. Set the command beside the other site
+commands in "Where my blyg lives":
+
+```json
+"commands": { "link_targets": ["scripts/blyg-link-targets"] }
+```
+
+`botference blyg-home links` runs it as a passage would and says how many
+posts it gave. The command prints JSON on stdout:
+
+```json
+{ "posts": [ { "name": "Harbour cranes", "title": "Harbour cranes and tides",
+               "id": "<26-character Blygger id>", "date": "2026-03-01",
+               "tags": ["essays"], "excerpt": "The first words of the post",
+               "file": "_notes/Harbour cranes.md" } ],
+  "truncated": false }
+```
+
+`name` is what a wikilink names and `id` the post's Blygger id; both are
+required. `title`, `date`, `tags`, `excerpt` and `file` (the note's path
+inside the site's checkout) are optional. List only posts that are published
+now, newest first.
+
+What the companion does with it:
+
+- It runs the command for each passage, in your site's checkout, never
+  through a shell, with a 10 second limit and a 512 KB limit on what it
+  prints, and checks every field. A post without a usable name and id is
+  dropped. No command, a failure, or nothing usable means no catalogue: the
+  passage runs exactly as it did before.
+- The catalogue goes into the agent's prompt as quoted data (at most 200
+  posts and about 48 KB, the newest first), with the rule: link only when the
+  line asks for a link, a backlink or a reference to your own writing; only to
+  a post in the catalogue, by its exact name; never an invented name.
+- It is not notes reading. It needs neither `tk_read_roots` nor
+  `hub_link_tk_notes`, and both agents get it. When a passage may also read
+  your notes, the catalogue tells it where each published post's own file is
+  (only for a file inside your `tk_read_roots`), so it can read the post in
+  full first. It may read other notes to understand, but it is told never to
+  link to one.
+- After the agent answers, every wikilink whose name is not exactly one from
+  the catalogue, and every embed (`![[…]]`), is reduced to its visible text
+  before the passage is stored. The gap keeps a private count of links kept
+  and links reduced. With no catalogue, every wikilink in a passage is
+  reduced.
+- Your Hub's preview and the drawer show the link as it is typed,
+  `[[Harbour cranes|my essay]]`. It becomes a link on your site.
+
+Your site decides what becomes a link. The example site links an agent's
+wikilink only when the name is one of its own published posts.
 
 ### The response default
 

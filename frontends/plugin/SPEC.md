@@ -14692,3 +14692,95 @@ hid that the run was retrying; the run's own error came first).
   to the one-shot, the capability sets or the wrapper.
 - What stays readable at the OS level now ALSO includes ~/Library/Keychains (encrypted items) and ~/.config/anthropic (the CLI's
   sign-in), which the CLI may also write.
+
+## Amendment (2026-11-27): a `/tk` passage links to the owner's own published posts (`tk-links.mjs`)
+
+The owner: "Claude and Codex in the Hub, can I ask them to link to my existing pieces … as backlinks? … They should be able to look
+it up." And: "when they backlink stuff, it should only backlink to published notes because others won't be able to see it anyway."
+
+- WHAT THE OWNER TYPES: nothing new. In a `/tk-claude …` or `/tk-codex …` line: "use a backlink to my essay on X to explain this". The
+  passage holds `[[<note name>|<visible text>]]`; the owner's site makes it a link when the post is published.
+- WHERE THE NAMES COME FROM: a catalogue the owner's site prints, by the command `link_targets` of "Where my blyg lives"
+  (`blyg-home.mjs` COMMAND_KEYS; optional; no `{note}`; left out of the run fingerprint, since no publish run runs it). JSON on stdout:
+  `{ posts: [{ name, id, title?, date?, tags?, excerpt?, file? }], truncated? }`, the published posts only, newest first.
+  `botference blyg-home links` runs it as a passage would and prints the count and the first names.
+- HOW IT IS RUN (`runCatalogueCommand`, `loadCatalogue`): for each passage, argv with `shell: false`, in the site's work tree, with
+  the minimal environment of the publish commands, stdin closed, its own process group, stopped at 10 s or past 512 KB of stdout.
+  `validateCatalogue` checks every field: a post needs a `name` (one line, no `[ ] | #`, at most 200 characters, not seen before)
+  and a 26-character id; any other field that does not fit is dropped alone; `file` is kept only as a relative path without `..`;
+  at most 200 posts. No setting, any failure, or no usable post is NO CATALOGUE, and the passage runs exactly as before.
+- THE PASSAGE'S LINKING is one named value, `TK_LINKING` = `none` | `catalogue`, chosen by one function (`tkLinkingFor`) from what
+  the command gave, and kept in one field of the gap (`gap.links.catalogue`, with `kept` and `reduced`); `linkingOf` refuses any
+  other value. There is no flag beside it.
+- THE PROMPT CHANGE (`tkgaps.mjs` `linksGuidance`, added to `gapPrompt` after the capability sentence and before "Write only the
+  text …"; nothing else in the prompt moves, and with `none` the prompt is byte for byte what it was). A second block of quoted data
+  between `POSTS-<marker>-BEGIN` and `POSTS-<marker>-END` (the call's own fresh marker, checked against both blocks): a JSON array
+  of `{ name, title?, id, date?, tags?, first_words? }`, at most about 48 KB (the newest that fit; the text says "(the newest of
+  them)" when cut). It is said to be data, not instructions. Then the rule, in these words: link ONLY when the instruction asks for a
+  link, a backlink or a reference to the reader's own writing; a backlink may point ONLY at a post in the catalogue, because readers
+  cannot open anything else; the catalogue is the first place to look; write `[[<note name>|<visible text>]]` with the name copied
+  exactly; never invent a name; if nothing fits, say so. Titles and excerpts are the owner's words but are treated as untrusted
+  data all the same: quoted, never followed.
+- IT IS NOT NOTES READING: it does not use `tk_read_roots` or `hub_link_tk_notes`, and it works with the capability set `web` for
+  both agents. Only a run that MAY read notes (`web+notes`) is also given, for each post whose file lies under a read root, that
+  file's absolute path (`promptCatalogue`), and one more sentence: it may open a published post's own file to read it in full, and
+  read other notes to understand, but a note that is not in the catalogue is never linked. A `web` run is never given a path.
+- AFTER THE RUN (`checkLinks`, in `askForGap`, before anything is stored): outside code, a wikilink whose name is exactly a catalogue
+  name stays as written; any other, and every embed `![[…]]`, becomes its visible text (the words after the bar, else the name).
+  With `none`, every wikilink is reduced. The counts are stored on the gap only when a catalogue was given or something was reduced.
+  This is the companion's check; the owner's site applies its own rule when it builds (it links only names of its own published
+  posts).
+- THE NOTE: unchanged. `storedAgentMarkdown` writes a kept link as `&#91;[name|text]]` (its first bracket a character reference,
+  as before), which the example site reads back inside an agent passage. The Obsidian export styles (`callout`, `studio`) still
+  defuse every wikilink in an agent's text.
+- WHAT THE OWNER SEES BEFORE PUBLISHING: the hosted Hub's preview shows a passage's text with `textContent` ("Shown as typed;
+  formatted when published"), and the drawer renders it as markdown, which has no wikilink form: in both, `[[name|text]]` is shown
+  as typed, unmangled.
+- NOT DONE: `botference fill-gap` (a blog's own drafts) is not given the catalogue. The catalogue is fetched for every passage and
+  not cached.
+- REAL RUNS (2026-11-27, Claude Code 2.1.330 and Codex CLI 0.167.2, `test/tk-links-real.test.mjs`, a made-up catalogue of three
+  posts): asked for a backlink, Claude 2.8 s and Codex 6.1 s, each one link to the right post by its exact name; not asked, neither
+  wrote a link (2.8 s, 4.7 s); a plain passage without a catalogue 1.9 s and 3.7 s; a notes run reading the post's own file and
+  linking only to it 3.6 s (Claude) and 10.1 s (Codex).
+
+## Amendment (2026-11-27): Codex reads notes (`tk-notes-reader.mjs`, `oneshot.mjs` codexJail)
+
+The owner: "you please give them both access. … When I say give them access, please give them access." The standing rule holds: a
+passage may read everything in the read roots and the web; "It should just not edit my files".
+
+- THE CHOICE: `tkCapsFor` gives `web+notes` to Claude and to Codex alike (`NOTES_AGENTS`), by the same settings and the same doors.
+  Taking `codex` out of that one list turns it off again.
+- NO SHELL. Codex reads files only through a shell, and a shell under the same OS wrapper as the CLI could read the CLI's own
+  sign-in folder; a wrapper cannot be nested in a wrapper on macOS (`sandbox-exec` inside `sandbox-exec`: "sandbox_apply: Operation
+  not permitted", tried 2026-11-27). So the CLI is given ONE tool server instead, `tk-notes-reader.mjs`: `list_notes`, `read_note`,
+  `search_notes`, read only, each path taken as the disk has it (links followed) and refused unless it lies inside a read root. It
+  is given on the command line for this run (`-c mcp_servers.notes={…}` with `default_tools_approval_mode="approve"` and
+  `enabled_tools`), in place of `mcp_servers={}`; `--ignore-user-config` stays, so the owner's `~/.codex/config.toml` is neither
+  read nor changed. The script is copied into the run's own fresh folder and run by the companion's Node.
+- THE WRAPPER for a notes run (`codexJail` with `roots`): the shipped profile, then rules after it that decide: no read of
+  `/private/tmp`, `/private/var/folders`, `/private/var/tmp` but the run's two folders (look-ups allowed); read under each read
+  root; start the Node that runs the reader; NO WRITE ANYWHERE but the CLI's own folder and the run's two folders; and last, no read
+  or write of the private places under the home folder (`CLAUDE_PRIVATE_PLACES`, less the CLI's own folder). `TMPDIR` is the run's
+  second folder.
+- THE CLI'S OWN HELPER, AND THE LIMIT THAT REMAINS. On Codex CLI 0.167.2 the model reaches a tool server, and the web search, only
+  through the CLI's "code mode", a second program shipped beside the CLI (`codex-code-mode-host`). With the feature off, every call
+  of the reader fails ("code-mode host is disabled"); with the program refused by the wrapper, as it was until now, a web passage
+  answered "the web search tool was unavailable". So a run with tools may start that one program (`codeMode`). It runs scripts the
+  model writes; asked in a real run to list everything it could reach, it showed the language's own objects and the CLI's tool
+  bindings and no file, process or network interface. That is the vendor's design and not a rule of this wrapper: the helper runs
+  under the same profile as the CLI, which must read its own folder to sign in, so THE OPERATING SYSTEM DOES NOT STOP THE HELPER
+  READING `~/.codex`. What the OS does enforce for a Codex notes run: no write outside the run's folders and the CLI's folder; no
+  read under `/Users` or `/Volumes` or the temporary folders but the roots, the CLI's folder and the run's folders; no program but
+  the CLI, its helper and the reader's Node; no port but 443.
+- THE VERSION GATE (`CODEX_NOTES_VERSION` = 0.167.2, asked with `codex --version` once per companion start): on any other version
+  the helper may not start and a notes run is a web run; its private record says "notes reading is off for Codex passages on this
+  version of the Codex CLI", and `botference tk-read check` says which applies.
+- ONE DIFFERENCE FROM CLAUDE, stated: a Claude notes run fetches pages only from the sites its line names (so note text cannot
+  leave in a fetched address). Codex's search and page reading are the provider's own tool, which the CLI cannot limit by site, so a
+  Codex notes run has no such limit.
+- WHAT IS RECORDED: the reader's calls (the path, the words searched, the folder listed), never what came back.
+- REAL RUNS (2026-11-27, Codex CLI 0.167.2, the companion's own code inside the wrapper): reading a named note and quoting its fact
+  9.4 s; asked for two files outside the roots, the reader refused both and neither's text appeared (13.3 s), and `/bin/cat` of each
+  under the same wrapper: "Operation not permitted"; asked to create a file in the notes folder, none was made (9.6 s), and a
+  program writing there under the same wrapper: EPERM; a plain passage 3.7 s; a web search 8.3 to 10.4 s with a recorded query.
+

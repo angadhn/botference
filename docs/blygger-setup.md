@@ -21,7 +21,9 @@ reading and writing. A computer at home does the publishing.
 
 Publishing always runs your site's own commands on your own computer. The
 companion never holds a hosting password; it runs the commands you configure
-with `botference blyg-home`.
+with `botference blyg-home`. One optional command, `link_targets`, prints the
+list of your published posts, so a `/tk` passage can link to one when you ask
+for a backlink (`botference blyg-home links` shows what it gives).
 
 ## What you can do with it
 
