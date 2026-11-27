@@ -175,6 +175,21 @@ test('THE PRIVATE PLACES COME LAST and win: a root that is, or links into, a sec
     assert.ok(r.status !== 0 && !/FIXTURE/.test(r.stdout), `${file} under root ${roots[0]}`);
   }
   assert.equal(run([home], '/bin/cat', [path.join(home, '.config', 'anthropic', 'kept')]).stdout, 'FIXTURE SIGN-IN', 'what sign-in needs stays readable');
+  // THE CLI'S SIGN-IN (a real run failed for three minutes without these): /usr/bin/security may start (and nothing else outside the
+  // CLI's install), ~/.config/anthropic and ~/.local/state/claude may be written, ~/.config/gh still may not
+  const prof0 = O.claudeJail({ env, work, roots: [], bin: '/bin/cat', install: '/bin' }).argv[2];
+  assert.match(prof0, /\(allow process-exec \(subpath "\/bin"\) \(literal "\/usr\/bin\/security"\)\)/);
+  assert.deepEqual(O.CLAUDE_SIGN_IN_PROGRAMS, ['/usr/bin/security']);
+  // (a shell in place of the CLI, its install /bin: it may start /usr/bin/security, and nothing else under /usr/bin)
+  const sh = cmdline => { const j = O.claudeJail({ env, work, roots: [home], bin: '/bin/sh', install: '/bin' }); return spawnSync(j.argv[0], [...j.argv.slice(1), '-c', cmdline], { cwd: work, encoding: 'utf8' }); };
+  assert.notEqual(sh('/usr/bin/true').status, 0, 'another program still refused');
+  assert.notEqual(sh('/usr/bin/env true').status, 0);
+  assert.ok(!/Operation not permitted/.test(sh('/usr/bin/security -h 2>&1').stdout), 'the keychain program may start');
+  assert.equal(run([home], '/usr/bin/touch', [path.join(home, '.config', 'anthropic', 'state')]).status, 0, 'sign-in state is written');
+  assert.notEqual(run([home], '/usr/bin/touch', [path.join(home, '.config', 'gh', 'x')]).status, 0, 'the rest of ~/.config: neither');
+  fs.mkdirSync(path.join(home, '.local', 'state', 'claude'), { recursive: true });
+  assert.equal(run([home], '/usr/bin/touch', [path.join(home, '.local', 'state', 'claude', 's')]).status, 0, 'the CLI\'s own state');
+  assert.notEqual(run([home], '/usr/bin/touch', [path.join(home, '.local', 'state', 'other')]).status, 0);
   // the order: every allow of a root comes before the private places' deny
   const prof = O.claudeJail({ env, work, roots: [path.join(home, 'notes')], bin: '/bin/cat', install: '/bin' }).argv[2];
   assert.ok(prof.indexOf(`(subpath "${path.join(fs.realpathSync.native(home), 'notes')}")`) < prof.indexOf('(deny file-read* file-write* (subpath'), 'roots first, private places last');
@@ -226,6 +241,7 @@ test('WHAT A PASSAGE USED is read from the stream (web addresses fetched, note p
   // its own temporary folder (the CLI cannot start in the wrapper without one), given to the wrapper too; its own process group
   assert.ok(rec[0].o.env.CLAUDE_CODE_TMPDIR && rec[0].o.env.CLAUDE_CODE_TMPDIR === jailed.tmp && jailed.tmp !== jailed.work);
   assert.equal(rec[0].o.detached, true);
+  assert.equal(rec[0].o.env.TMPDIR, jailed.tmp, 'the system temporary folder is not the CLI\'s');
   assert.deepEqual(r, { ok: true, text: 'The passage, written.', used: 'both', sources: { web: ['search: ships', 'https://www.example.com/a'], notes: ['/r/one/n.md'], refused: [] } });
   const w = await O.runOneShot('claude', 'p', { caps: 'web', spawn: streamSpawn([{ type: 'result', subtype: 'success', result: 'Plain.' }]), claudeJail: noJail });
   assert.deepEqual(w, { ok: true, text: 'Plain.', used: 'none', sources: { web: [], notes: [], refused: [] } });

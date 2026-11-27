@@ -370,6 +370,7 @@ export async function runOneShot(agent, prompt, { model = '', effort = '', timeo
       // keeps it out of; without it the CLI cannot start inside the wrapper)
       if (!outDir) { drop(`could not start ${agent}`); return; }
       env.CLAUDE_CODE_TMPDIR = outDir;
+      env.TMPDIR = outDir;   // (the system's temporary folder is shared with every other program: the wrapper keeps the CLI out of it)
       const j = jailClaude({ env, work: dir, tmp: outDir, roots: caps === 'web+notes' ? roots : [] });
       if (!j || !j.ok) { drop((j && j.error) || CLAUDE_UNCONTAINED); return; }
       c.args = [...j.argv.slice(1), ...c.args];
@@ -459,7 +460,7 @@ export const CLAUDE_UNCONTAINED = 'Claude cannot be contained on this system';
 export const CLAUDE_PRIVATE_PLACES = Object.freeze([
   // keys, tokens and the tools that hold them
   '.ssh', '.botference', '.botference-backup', '.blyg-inbox-token', '.aws', '.gnupg', '.codex', '.supabase', '.cloudflared', '.netrc', '.npmrc',
-  '.pypirc', '.docker', '.kube', '.git-credentials', '.env', '.config', 'Library/Keychains',
+  '.pypirc', '.docker', '.kube', '.git-credentials', '.env', '.config',
   // what the owner typed in a shell
   '.zsh_history', '.zhistory', '.zsh_sessions', '.bash_history', '.bash_sessions', '.sh_history', '.history', '.python_history',
   '.node_repl_history', '.psql_history', '.mysql_history', '.sqlite_history', '.irb_history', '.lesshst', '.local/share/fish',
@@ -474,6 +475,11 @@ export const CLAUDE_PRIVATE_PLACES = Object.freeze([
 // this wrapper (2026-11-27, Claude Code 2.1.330; no model called, no file's contents read): with all of ~/.config denied the CLI is
 // signed out; with ~/.config/anthropic allowed again it is signed in. Nothing else under ~/.config is readable.
 export const CLAUDE_CONFIG_KEEP = Object.freeze(['anthropic']);
+// THE CLI'S SIGN-IN, as a real run showed it (2026-11-27): with a subscription the CLI reads its token from the macOS keychain by
+// starting /usr/bin/security (which reads ~/Library/Keychains: the items stay encrypted, each behind the keychain's own access rules),
+// and it writes its sign-in state under ~/.config/anthropic (and its own state under ~/.local/state/claude). Refused any of these, every API call failed and was retried for about three
+// minutes, and the passage ended "the agent stopped before it finished". So that program may start, and that folder may be written.
+export const CLAUDE_SIGN_IN_PROGRAMS = Object.freeze(['/usr/bin/security']);
 // (kept for the earlier name)
 export const SECRET_PLACES = CLAUDE_PRIVATE_PLACES;
 const SAFE_PROFILE_PATH = /^\/[A-Za-z0-9 ._@+,()'&~/-]+$/;
@@ -501,12 +507,12 @@ export function claudeJail({ env = process.env, work, tmp = '', roots = [], plat
       // (the folders above each root may be looked up, never listed or read: a path is resolved one name at a time)
       ...(roots.length ? [`(allow file-read-metadata ${[...new Set(roots.flatMap(r => ancestorsOf(realNative(r))))].map(a => `(literal ${q(a)})`).join(' ')})`] : []),
       '(deny file-write*)',
-      `(allow file-write* (subpath ${q(realNative(work))})${tmp ? ` (subpath ${q(realNative(tmp))})` : ''} (subpath ${q(cliHome)}) (regex #"^${reEsc(home)}/\\.claude\\.json(\\.tmp\\.[0-9]+\\.[0-9a-f]+|\\.tmp\\.[0-9a-f]{8}|\\.lock)?$") (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper"))`,
+      `(allow file-write* (subpath ${q(realNative(work))})${tmp ? ` (subpath ${q(realNative(tmp))})` : ''} (subpath ${q(cliHome)}) (subpath ${q(path.join(home, '.local', 'state', 'claude'))}) (regex #"^${reEsc(home)}/\\.claude\\.json(\\.tmp\\.[0-9]+\\.[0-9a-f]+|\\.tmp\\.[0-9a-f]{8}|\\.lock)?$") (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper"))`,
       '(deny process-exec)',
-      `(allow process-exec (subpath ${q(realNative(dir))}))`,
+      `(allow process-exec (subpath ${q(realNative(dir))}) ${CLAUDE_SIGN_IN_PROGRAMS.map(p => `(literal ${q(p)})`).join(' ')})`,
       '; LAST, so nothing above outranks them: the private places, whatever a root or a link says',
       `(deny file-read* file-write* ${priv})`,
-      ...(CLAUDE_CONFIG_KEEP.length ? [`(allow file-read* ${CLAUDE_CONFIG_KEEP.map(k => `(subpath ${q(path.join(home, '.config', k))})`).join(' ')})`] : []),
+      ...(CLAUDE_CONFIG_KEEP.length ? [`(allow file-read* file-write* ${CLAUDE_CONFIG_KEEP.map(k => `(subpath ${q(path.join(home, '.config', k))})`).join(' ')})`] : []),
     ].join('\n');
   } catch (e) { return { ok: false, error: CLAUDE_UNCONTAINED }; }
   return { ok: true, argv: [sandboxExec, '-p', profile, cli] };
