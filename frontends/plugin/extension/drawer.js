@@ -3797,9 +3797,12 @@ ${bubbleShellHtml()}`;
     function gapUsedHtml(g) {
       const src = g && g.sources;
       const list = src ? [...(src.web || []), ...(src.notes || [])] : [];
-      if (!g || !g.used || g.used === 'none' || !list.length) return '';
-      const said = g.used === 'both' ? 'used the web and your notes' : g.used === 'web' ? 'used the web' : 'used your notes';
-      return `<details class="gapused"><summary>${esc(said)}</summary>${list.map(x => `<div class="gapsrc">${esc(String(x))}</div>`).join('')}</details>`;
+      // (fetches its rules refused: a run that read your notes fetches only from the sites your line names)
+      const refused = src && Array.isArray(src.refused) ? src.refused : [];
+      if (!g || ((!g.used || g.used === 'none' || !list.length) && !refused.length)) return '';
+      const said = g.used === 'both' ? 'used the web and your notes' : g.used === 'web' ? 'used the web' : g.used === 'notes' ? 'used your notes' : 'tried to fetch a page';
+      return `<details class="gapused"><summary>${esc(said)}</summary>${list.map(x => `<div class="gapsrc">${esc(String(x))}</div>`).join('')}`
+        + `${refused.map(x => `<div class="gapsrc">not fetched (not a site your line names): ${esc(String(x))}</div>`).join('')}</details>`;
     }
     function gapBodyHtml(target, r) {
       const text = String(r.text || '');
@@ -11044,6 +11047,7 @@ ${bubbleShellHtml()}`;
       outside: 'It replaces changes made to your post outside the plugin.',
       'outside-replaced': 'It replaces changes made to your post outside the plugin. Cancel keeps your post as it is.',
       'drawer-text': 'Another comment of this post was changed since it was published and not pressed again: it goes out as it is in your drawer now.',
+      'notes-read': 'An AI passage in it was written from your notes: check what it says before it is published.',
     });
     function pubReasonsHtml(run) {
       const why = Array.isArray(run.reasons) ? run.reasons : [];
