@@ -38,6 +38,7 @@ import { isPublishableMsg } from './blyg-note.mjs';
 import { audioTypeOf, sniffAudio, SPEECH_LIMITS } from './hub-speech.mjs';
 import { pagesOf, bodyText } from './clippings.mjs';
 const CLIPPING_ID_RE = /^[0-9a-f]{16}$/;
+const TK_USED_WORDS = Object.freeze(['none', 'web', 'notes', 'both']);
 // (what `earlier` answers: public facts of zero or one post)
 const earlierView = list => (list || []).filter(e => e && e.post).map(e => ({ id: String(e.post), address: String(e.address || ''), permalink: String(e.permalink || ''),
   title: String(e.title || '').slice(0, 120), date: String(e.date || ''), version: Number(e.version) || 1 }));
@@ -182,7 +183,8 @@ export function blocksOf(msg, { jsonBytes = HUB_LINK_LIMITS.blocksJsonBytes } = 
     at = m.end;
     const g = gaps[i];
     if (!g || g.mode === 'removed') return;
-    all.push({ kind: 'agent', id: String(g.id), instruction: String(g.instruction || '').slice(0, 1000), state: String(g.mode), text: String(g.text || ''),
+    // (`used`: the plain word of what the passage used, oneshot TK_USED; where from (addresses, note paths) stays on the computer)
+    all.push({ kind: 'agent', id: String(g.id), instruction: String(g.instruction || '').slice(0, 1000), state: String(g.mode), ...(TK_USED_WORDS.includes(g.used) ? { used: g.used } : {}), text: String(g.text || ''),
       model: String(g.model || '').slice(0, 100), at: String(g.at || '').slice(0, 40), ...(g.mode === 'failed' ? { reason: scrubPaths(g.reason).slice(0, 300) } : {}) });
   });
   own(text.slice(at));
@@ -472,6 +474,7 @@ export const HUB_LINK_SAY = Object.freeze({
   'edited-on-computer': 'You changed this passage on your computer; write it again there.',
   'address-unconfirmed': 'This clipping’s address changed when a private part of it was taken out, so it is not published until you confirm the address on your computer (botference clippings check).',
   'not-in-clipping': 'That passage isn’t in the clipping as kept on your computer.',
+  'notes-read': 'A passage in this reply was written from your notes, so it waits for you to look at it on your computer before it is published.',
   'cannot-add': 'Your earlier reply can no longer be added to from here (it changed, or another reply went out since). Publish this one as a new post instead.',
   'cannot-add-outside': 'Your earlier reply was edited by hand on your computer, so this is not added to it from here. Publish it as a new post, or discard it.',
   'cannot-add-changed': 'Your earlier reply changed, so this was not added. Publish it as a new post, or discard it.',
@@ -555,6 +558,8 @@ export function createHubLink(deps) {
       v.version = Number(r.version || p.version) || 1;
     }
     if (state === 'failed' && e && e.failure && e.failure.say) v.say = scrubPaths(e.failure.say).slice(0, 400);
+    // (a passage written from the owner's notes is always looked at on the computer first: the Hub cannot show that it was seen)
+    if (state === 'awaiting_look' && e && e.why === 'notes-read') v.say = HUB_LINK_SAY['notes-read'];
     // (a reply sent to be added to an earlier post: which post, and whether it can go there now; nothing else of that post)
     if (rec.add_to && thread && (rec.step === 'saved' || rec.step === 'pressed')) {
       const e = rec.step === 'saved' ? deps.earlierFor({ url: rec.page_url, thread_id: rec.thread_id }) : null;

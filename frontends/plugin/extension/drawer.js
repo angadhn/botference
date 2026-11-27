@@ -3788,8 +3788,24 @@ ${bubbleShellHtml()}`;
         + body
         + (needsEdit ? '<div class="gapneeds">This passage holds letters your site keeps for marking agents\' passages, so it cannot be published as it is: edit it.</div>' : '')
         + (g.mode === 'pasted-by-reader' ? '' : `<div class="gapask" title="${esc('what you asked for')}">asked: ${esc(g.instruction || '')}</div>`)
+        + gapUsedHtml(g)
         + (acts ? `<div class="gapacts">${acts}</div>` : '')
         + '</div>';
+    }
+    // WHERE A PASSAGE CAME FROM (the companion's private record, oneshot TK_USED): one quiet line, and the addresses and note paths
+    // it used, as text (never links: the owner copies one if they want it)
+    function gapUsedHtml(g) {
+      const src = g && g.sources;
+      const list = src ? [...(src.web || []), ...(src.notes || [])] : [];
+      // (fetches its rules refused: a run that read your notes fetches only from the sites its instruction names; `note`: e.g. fetching off)
+      const refused = src && Array.isArray(src.refused) ? src.refused : [];
+      const note = src && src.note ? String(src.note) : '';
+      if (!g || ((!g.used || g.used === 'none' || !list.length) && !refused.length && !note)) return '';
+      const said = g.used === 'both' ? 'used the web and your notes' : g.used === 'web' ? 'used the web' : g.used === 'notes' ? 'used your notes'
+        : refused.length ? 'tried to fetch a page' : 'about this passage';
+      return `<details class="gapused"><summary>${esc(said)}</summary>${list.map(x => `<div class="gapsrc">${esc(String(x))}</div>`).join('')}`
+        + `${refused.map(x => `<div class="gapsrc">not fetched (not a site the instruction names): ${esc(String(x))}</div>`).join('')}`
+        + `${note ? `<div class="gapsrc">${esc(note)}</div>` : ''}</details>`;
     }
     function gapBodyHtml(target, r) {
       const text = String(r.text || '');
@@ -11034,6 +11050,7 @@ ${bubbleShellHtml()}`;
       outside: 'It replaces changes made to your post outside the plugin.',
       'outside-replaced': 'It replaces changes made to your post outside the plugin. Cancel keeps your post as it is.',
       'drawer-text': 'Another comment of this post was changed since it was published and not pressed again: it goes out as it is in your drawer now.',
+      'notes-read': 'An AI passage in it was written from your notes: check what it says before it is published.',
     });
     function pubReasonsHtml(run) {
       const why = Array.isArray(run.reasons) ? run.reasons : [];

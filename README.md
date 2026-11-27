@@ -1186,9 +1186,17 @@ The checklist treats a model as one more tool to set up.
 When you send, Claude writes that passage, and it appears in your message as
 a block marked as the agent's, with your instruction under it. You can fill it
 again, edit it, keep it as your own words ("mine"), or remove it. Each gap is
-a separate `claude -p` run with no tools, no MCP servers and none of your
-settings files, given the page only as data; it is not your page's agent
-session. Codex cannot fill gaps. The export writes what is stored and asks no
+a separate `claude -p` run (or `codex exec` for `/tk-codex`), given the page
+only as data; it is not your page's agent session. When your line asks for
+it, the agent may search the web, and read (only read) the notes in the
+folders you list in `"tk_read_roots"` (`botference tk-read check`; none by
+default). It can never write, edit or delete a file, run a command, or use
+MCP servers, and it runs inside a macOS sandbox that refuses writes. Codex
+searches the web but cannot read your notes. A line sent from your Hub reads
+notes only if `"hub_link_tk_notes": "on"` (decided by who wrote the
+instruction). A passage that read your notes fetches pages only from sites
+its `/tk` instruction names (none on a Claude Code other than 2.1.330), and its post always waits for your look before it is
+published. The export writes what is stored and asks no
 agent: a callout under an HTML comment with your instruction (default), or
 Blygger Studio's own `[TK] … [=] … [/TK]` with `"gap_style": "studio"`;
 `"gap_export": "omit"` leaves the agents' passages out of "My notes only".

@@ -72,7 +72,8 @@ export const QUEUE_MOVES = Object.freeze({
 /** The pauses the owner lifts with "Try the queue again" (or a press); a run's pause is lifted by resolving that run. */
 export const OWNER_RESUMES = Object.freeze(['paused_for_site', 'paused_for_error']);
 /** Why an entry needs the owner's look. */
-export const NEEDS_LOOK_WHY = Object.freeze(['left-out', 'outside', 'unknown-text', 'earlier-failed']);
+// (notes-read: a passage's agent read the owner's notes, blyg-run LOOK_FORCED: seen on the computer before it is public)
+export const NEEDS_LOOK_WHY = Object.freeze(['left-out', 'outside', 'unknown-text', 'earlier-failed', 'notes-read']);
 /** How an entry came to the runner, one value set once: `owner` (the press found the runner free and ran it at once, as before the
  *  queue) or `queue` (the queue started it later). */
 export const STARTED_BY = Object.freeze(['owner', 'queue']);

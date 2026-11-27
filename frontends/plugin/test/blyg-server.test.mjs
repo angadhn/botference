@@ -332,7 +332,11 @@ await test('the library and local files are never asked about', async () => {
     assert.deepEqual([g.text, g.agent], ['ONESHOT filled text.', 'claude']);
     assert.match(g.at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
     const [run] = runs();
-    assert.deepEqual(run.argv.slice(0, 6), ['claude', '-p', '--tools', '', '--strict-mcp-config', '--restricted']);
+    // (a /tk passage may search the web now, wrapped by sandbox-exec; no read roots set here, so no notes: tk-read.mjs)
+    const at = run.argv.indexOf('claude');
+    assert.equal(run.argv[0], '/usr/bin/sandbox-exec');
+    assert.deepEqual(run.argv.slice(at, at + 7), ['claude', '-p', '--tools', 'WebSearch,WebFetch', '--strict-mcp-config', '--restricted', '--no-session-persistence']);
+    assert.ok(!run.argv.includes('--add-dir'));
     assert.ok(!run.argv.includes('--resume') && !run.argv.includes('--session-id'));
     assert.match(run.cwd, /bfp-oneshot-/, 'in a fresh empty folder');
     const mm = /\n(DATA-[0-9a-f]{24}-BEGIN)\n(.*)\n(DATA-[0-9a-f]{24}-END)\n/.exec(run.input);
@@ -432,8 +436,10 @@ await test('the library and local files are never asked about', async () => {
       const names = Object.keys(run.env || {});
       assert.ok(!names.includes('BFP_CANARY_SECRET') && !JSON.stringify(run.env).includes('CANARY-7f3a'), names.join(','));
       assert.ok(!names.includes('PLUGIN_PASSWORD') && !names.includes('PLUGIN_OWNER_PASSWORD') && !names.includes('PLUGIN_ONESHOT_CMD'), names.join(','));
-      // HOME, PATH, TMPDIR, LANG, USER, LOGNAME, the CLI's sign-in names (none set here), and the test stand-in's log
-      for (const n of names) assert.ok(['HOME', 'PATH', 'TMPDIR', 'LANG', 'USER', 'LOGNAME', 'ONESHOT_LOG', '__CF_USER_TEXT_ENCODING'].includes(n), n);
+      // HOME, PATH, TMPDIR, LANG, USER, LOGNAME, the CLI's sign-in names (none set here), the test stand-in's log, and (Claude with tools)
+      // its own temporary folder, the run's fresh one
+      for (const n of names) assert.ok(['HOME', 'PATH', 'TMPDIR', 'LANG', 'USER', 'LOGNAME', 'ONESHOT_LOG', '__CF_USER_TEXT_ENCODING', 'CLAUDE_CODE_TMPDIR'].includes(n), n);
+      if (run.env.CLAUDE_CODE_TMPDIR) assert.match(run.env.CLAUDE_CODE_TMPDIR, /bfp-oneshot-out-/);
     }
   });
 

@@ -364,6 +364,7 @@
     'left-out': 'A comment that was in your post is no longer on this page, so it would be left out.',
     outside: 'Your post was changed outside the plugin since it was last published from here, and those changes would be lost. If you go on, you see the post before it is published, and Cancel keeps it as it is.',
     'earlier-failed': 'An earlier post from this page did not go out, so this one waits for you.',
+    'notes-read': 'An AI passage in it was written from your notes, so you see the post before it is published.',
     'unknown-text': 'Another comment of this post was changed since it was published and not pressed again, so what it should say is not known. If you go on, it is taken as it is in your drawer now, and you see the post before it is published.',
   });
   const pubUnderWay = q => ((q && q.entries) || []).filter(e => PUB_UNDER_WAY.indexOf(e.state) !== -1).length;

@@ -45,7 +45,8 @@ import { renderTarget, studioLeftOut } from './studio-paste.mjs';
 import { quoteStyleOf, commentOrderOf, agentStyleOf, calloutTypeOf, RESPONSE_MODES, canRespond } from './note-quotes.mjs';
 import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps, MSG_CHANNELS, askForGap, gapMove, canGapMove,
   GAP_LIMITS, forGuest } from './tkgaps.mjs';
-import { runOneShot, codexJail } from './oneshot.mjs';
+import { runOneShot, codexJail, claudeJail, CLAUDE_FETCH_RULES_VERSION } from './oneshot.mjs';
+import { validateTkRead, tkCapsFor, ownerHosts } from './tk-read.mjs';
 import { spawn as spawnChild } from 'node:child_process';
 import { loadHostedAuth, createAccess, AccessConfigError, connectionRecord, connectionLive, verdictOfRequest } from './access.mjs';
 import { createHosted, hostedPeopleOf, isLocalDirect, sanitizeHandle, originVerdict, sourceRefusal, corsFor, hostVerdict, hostRefused, pageCsp, newNonce } from './hosted.mjs';
@@ -2262,12 +2263,13 @@ function tidyComment(page, { text, thread, quote, page_number, mark, model }) {
 // the page's own agent session; killed when the wait ends. PLUGIN_ONESHOT_CMD
 // (tests: a JSON argv array) replaces the bot's CLI, as PLUGIN_BRIDGE_CMD
 // replaces the bridge.
-function askGap(page, prompt, { agent = 'claude', timeoutMs = 90000 } = {}) {
+// (`caps`, `roots`: what the passage's agent may use, tk-read.mjs tkCapsFor; its time limit follows from the set, oneshot timeLimitFor)
+function askGap(page, prompt, { agent = 'claude', caps = 'none', roots = [], fetchHosts = [] } = {}) {
   if (NO_AGENTS) return Promise.resolve({ ok: false, error: AGENTS_OFF_REASON });
   // the model and effort the owner set for that agent in the companion's own settings (the chat's /model and /effort); the model is
   // not invented when none is set, the effort is medium then
   const { model, effort } = agentSetting(agent);
-  return runOneShot(agent, prompt, { model, effort, timeoutMs, ...oneshotOverride() });
+  return runOneShot(agent, prompt, { model, effort, caps, roots, fetchHosts, ...oneshotOverride() });
 }
 // (tests: PLUGIN_ONESHOT_CMD replaces the CLI; the stand-in is told where to log, which is the one name added to the child's minimal
 // environment, and the jail is made with the CLI's name, since the stand-in runs in its place)
@@ -2276,7 +2278,9 @@ function oneshotOverride() {
   if (!override) return {};
   return { spawn: (cmd, args, o) => spawnChild(override[0], [...override.slice(1), cmd, ...args],
     { ...o, env: { ...o.env, ...(process.env.ONESHOT_LOG ? { ONESHOT_LOG: process.env.ONESHOT_LOG } : {}) } }),
-  jail: o => codexJail({ ...o, bin: 'codex' }) };
+  jail: o => codexJail({ ...o, bin: 'codex' }), claudeJail: o => claudeJail({ ...o, bin: 'claude', install: '/usr/bin' }),
+  // (the stand-in has no version of its own: the one the fetch rules are for, unless a test names another)
+  cliVersion: async () => process.env.PLUGIN_ONESHOT_CLAUDE_VERSION || CLAUDE_FETCH_RULES_VERSION };
 }
 function agentSetting(agent) {
   const a = store.readConfig().agents || {};
@@ -3189,7 +3193,7 @@ function gapBudget(url) {
 // what is stored on a message, from its text (an edit keeps unchanged fills)
 function attachGaps(req, msg) {
   if (!msg || !ownerTyped(msg)) { if (msg) delete msg.gaps; return []; }
-  const { gaps, fresh } = buildGaps(msg.text, msg.gaps, { modelOf: agent => agentSetting(agent).model });
+  const { gaps, fresh } = buildGaps(msg.text, msg.gaps, { modelOf: agent => agentSetting(agent).model, channel: msg.channel });
   if (gaps.length) msg.gaps = gaps; else delete msg.gaps;
   return fresh;
 }
@@ -3224,7 +3228,14 @@ async function fillEach(url, target, ts, ids, token) {
       budget.spend();
       const thread = target && target !== store.PAGE_CHAT ? store.findThread(page, target) : null;
       const item = page.blyg && page.blyg.status === 'blyg' ? page.blyg.item : null;
-      r = await askForGap({ gap, msgText: msg.text, quote: thread ? thread.quote : '', page, agent,
+      // WHAT THE PASSAGE'S AGENT MAY USE: one choice, from the settings, the agent and WHO WROTE THIS INSTRUCTION (the gap's `from`,
+      // set when the instruction was born: never the message's last save; none → the web only) (tk-read.mjs)
+      const read = validateTkRead(store.readConfig());
+      const caps = tkCapsFor({ read, agent, channel: gap.from });
+      // (a notes run fetches only from the hosts named in THIS INSTRUCTION's own words, tk-read.mjs ownerHosts: never the rest of the
+      // message, which on a Hub-filed thread the key holder wrote, even once the owner has reworded the instruction)
+      r = await askForGap({ gap, msgText: msg.text, quote: thread ? thread.quote : '', page, agent, caps, roots: caps === 'web+notes' ? read.roots : [],
+        fetchHosts: caps === 'web+notes' ? ownerHosts(gap.instruction) : [],
         post: item ? { id: item.id, version: item.version, origin: item.origin } : null,
         ask: (prompt, o) => askGap(page, prompt, o) });
     }
@@ -3235,7 +3246,7 @@ async function fillEach(url, target, ts, ids, token) {
     const g2 = m2 && (m2.gaps || []).find(g => g.id === id);
     fillDrop(fillKey(url, target, ts, id), token);
     if (!g2 || g2.mode !== 'pending' || g2.instruction !== gap.instruction) continue;
-    if (r.mode === 'filled-by-agent') gapMove(g2, 'filled-by-agent', { text: r.text, agent, model: r.model || '', at: r.at });
+    if (r.mode === 'filled-by-agent') gapMove(g2, 'filled-by-agent', { text: r.text, agent, model: r.model || '', at: r.at, used: r.used || '', sources: r.sources || null });
     else gapMove(g2, 'failed', { reason: r.reason });
     store.savePage(latest);
     broadcast({ type: 'page', url: latest.url });
