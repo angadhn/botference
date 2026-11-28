@@ -14450,6 +14450,13 @@ signed. This side never trusts the browser.
   ICC profile (APP2 `ICC_PROFILE`) and Adobe's colour tag (APP14), so Exif and its GPS and thumbnail, XMP, APP13 (Photoshop/IPTC), MPF, and
   every comment (COM); whatever follows the end of image is cut off. A file that is not a whole JPEG (a length off the end, no scan, no end of
   image) is refused. The image data is never touched.
+- WHO MAY: any key that may reach `reply` (a drafts-only key too: pictures attach to drafts, and publishing is still gated by `key.publish`).
+  What a stolen key could do is bounded instead: 40 pictures an hour (counted in `hub-link-images.json` in the companion's data folder, so a
+  restart does not reset the hour), each at most 3,000,000 bytes, and the folder at most 500 MB and 2000 files in all (409 `folder-full`,
+  checked before the save). Bodies being read have their own slot count and say `limit: 'image-reading'` (speech's are unchanged).
+- THE ALLOW-LIST (one rule, shared with the blog's publish proof): SOF0-15 (not C4, C8, CC), DHT, DQT, DRI, DAC, SOS; APP0 only when it starts
+  `JFIF\0`, APP2 only `ICC_PROFILE\0`, APP14 only `Adobe`. Everything else is dropped (JFXX thumbnails, Exif/XMP, APP13, MPF, comments, unknown
+  markers), also between scans; after the end of image nothing is kept (an appended second JPEG goes).
 - THE FILE: saved as `<sha256 of the bytes as saved>.jpg`, mode 0644, written to a temporary name and linked into place (never over a file:
   a file already there with the same bytes is the answer; with other bytes `name-taken`); the folder is resolved again at the save and must lie
   inside the checkout (nothing is created before that check). The log says the hash's first 8 characters, the size and the dropped segment
@@ -14459,9 +14466,9 @@ signed. This side never trusts the browser.
   is plain words: bare `[ ] " < > | \ { } `` ` ``  and `&` are refused with a sentence (the Hub writes them as `&amp; &lt; &gt; &quot; &#92; &#96;
   &#123; &#125; &#124;` and turns brackets into parentheses), at most 300 characters. Any other image (another folder, another host, mid-line,
   without the setting) is refused as before ("images are not supported in a short post yet").
-- CLEANUP (`cleanupImages`, run after each save): a file of that folder that git does not track, is older than 30 days (`keepDays`; a draft
-  that has not been published may still hold the line, and a draft's text is not a note yet) and is named by no `.md` file in the notes
-  folder, is deleted. An unpublished upload is therefore only ever a file in the working tree: the example site's publish script commits only
+- CLEANUP (`cleanupImages`, run after each save): a file of that folder that git does not track, is older than 30 days (`keepDays`) and is named by no text file under the site checkout (every note, page and collection, recursively;
+  not assets/, .git, node_modules, _site) and by no thread of a page record this computer holds (a saved Hub draft), is deleted; if the drafts
+  cannot be read nothing is. An unpublished upload is therefore only ever a file in the working tree: the example site's publish script commits only
   the pictures a note names (`--stage-note`) and its `--only-note` proof accepts only those.
 - Tests (`hub-link-image`, 11): the filter on a hand-built Exif GPS block, APP13, comment, XMP and trailing bytes; refusals of what is not a
   whole JPEG; a real JPEG (macOS `sips`) saved without APP1/APP13/COM and still decoding at the same size; confinement (outside, a link out,

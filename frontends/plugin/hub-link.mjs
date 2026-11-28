@@ -535,7 +535,7 @@ export function createHubLink(deps) {
   // pictures are offered when the site setting names an image folder (hub-image.mjs createImages); the route is 404 otherwise
   const imageGate = () => (deps.images ? deps.images.gate() : 'off');
   // the audio bodies being read before their signature can be checked (HUB_LINK_LIMITS.audioReading at once), and how long each may take
-  const reading = { n: 0 };
+  const reading = { n: 0, image: 0 };   // (recordings and pictures are counted apart: a picture never takes a recording's slot, nor says audio)
   const audioReadMs = Number.isInteger(deps.audioReadMs) && deps.audioReadMs > 0 ? deps.audioReadMs : HUB_LINK_LIMITS.audioReadMs;
   const statusWait = Number.isInteger(deps.statusWaitMs) && deps.statusWaitMs > 0 ? deps.statusWaitMs : HUB_LINK_LIMITS.statusWaitMs;
   // a passage left `pending` with no fill running (the companion restarted mid-fill) is failed "interrupted", through the gap's own move
@@ -894,10 +894,11 @@ export function createHubLink(deps) {
       req.resume(); return tooLarge(false);
     }
     // AT MOST 2 BODIES are read at once (each from a key holder), each within its deadline
-    if (reading.n >= HUB_LINK_LIMITS.audioReading) { say(`limited ${spec.kind}-reading`); res.writeHead(429, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'limit', limit: 'audio-reading' })); try { req.destroy(); } catch { /* gone */ } return; }
-    reading.n++;
+    const slot = spec.kind === 'image' ? 'image' : 'n';
+    if (reading[slot] >= HUB_LINK_LIMITS.audioReading) { say(`limited ${spec.kind}-reading`); res.writeHead(429, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'limit', limit: `${spec.kind}-reading` })); try { req.destroy(); } catch { /* gone */ } return; }
+    reading[slot]++;
     let got;
-    try { got = await readRaw(req, spec.cap, audioReadMs); } finally { reading.n--; }
+    try { got = await readRaw(req, spec.cap, audioReadMs); } finally { reading[slot]--; }
     if (got.late) { say(`refused ${spec.kind}-late`); res.writeHead(408, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'too-slow' })); try { req.destroy(); } catch { /* gone */ } return; }
     if (got.over) { tooLarge(); try { req.destroy(); } catch { /* gone */ } return; }
     if (got.body.length !== declared || bodyHashOf(got.body) !== named) { say('refused body-not-as-signed'); return answer(res, 401, { ok: false, error: 'refused' }); }

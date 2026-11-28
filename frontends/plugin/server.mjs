@@ -3365,7 +3365,10 @@ const hubLink = createHubLink({
   // speech for the Hub's reply box (hub-speech.mjs): contained ffmpeg and whisper-cli, jobs in memory only; off when a tool is missing
   speech: createSpeech({ log: line => console.log(`hub-link: ${line}`) }),
   // pictures for the Hub's reply box (hub-image.mjs): saved into the site's `image_folder` (blyg-home); off when the setting names none
-  images: createImages({ settings: () => { const v = validateHome(store.readConfig().blyg_home); return v.ok ? v.settings : null; }, log: line => console.log(`hub-link: ${line}`) }),
+  images: createImages({ settings: () => { const v = validateHome(store.readConfig().blyg_home); return v.ok ? v.settings : null; }, log: line => console.log(`hub-link: ${line}`),
+    stateFile: path.join(store.DIR, 'hub-link-images.json'),
+    // the text of every page record's threads (a saved Hub draft is one): a picture named only there is never cleaned up
+    heldText: () => { let t = ''; const idx = store.readIndex(); for (const k of Object.keys(idx)) { const p = store.readPageByKey(k); if (p && Array.isArray(p.threads)) t += `${JSON.stringify(p.threads)}\n`; } return t; } }),
   keyDir: secretsDir(),
   repliesFile: path.join(store.DIR, HUB_LINK_REPLIES_FILE),
   bind: ({ post, quote }) => bindVerified({ page_url: post.page, id: post.id, origin: post.origin, quote, source: 'hub' }),

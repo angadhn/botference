@@ -309,3 +309,75 @@ test('the caption: the owner\'s plain words; characters markdown, HTML or Liquid
   assert.equal(hostile.text, '');
   assert.match(hostile.blocked.join(), /image caption may not hold/);
 });
+
+// ---- the reviewer's cases: the allow-list, a second scan, an appended file, the caps, the drafts ----------------------------------------
+const SOS = segment(0xda, Buffer.from([1, 1, 0, 0, 0x3f, 0]));
+const JFIF = segment(0xe0, Buffer.from('JFIF\0\x01\x01\0\0\x01\0\x01\0\0', 'latin1'));
+const GPS = segment(0xe1, Buffer.from('Exif\0\0II*\0 GPSLatitude 51.5', 'latin1'));
+const EOI = Buffer.from([0xff, 0xd9]);
+const jpeg = (...parts) => Buffer.concat([Buffer.from([0xff, 0xd8]), ...parts]);
+
+test('the allow-list: a JFXX thumbnail, APP1 between two scans, an MPF with a second Exif JPEG appended, comments, and unknown markers are all dropped', () => {
+  const jfxx = I.stripJpeg(jpeg(segment(0xe0, Buffer.from('JFXX\0\x10thumbnail', 'latin1')), SOS, Buffer.from([1, 2, 3]), EOI));
+  assert.deepEqual([jfxx.ok, markers(jfxx.bytes), jfxx.dropped], [true, [0xda], ['APP0']]);
+  const between = I.stripJpeg(jpeg(JFIF, SOS, Buffer.from([1, 2, 0xff, 0x00, 3]), GPS, SOS, Buffer.from([4, 5]), EOI));
+  assert.equal(between.ok, true);
+  assert.ok(!between.bytes.includes(Buffer.from('GPSLatitude')));
+  assert.deepEqual(between.dropped, ['APP1']);
+  const second = jpeg(JFIF, SOS, Buffer.from([9, 9]), EOI);
+  const appended = I.stripJpeg(Buffer.concat([jpeg(segment(0xe2, Buffer.from('MPF\0\0\0', 'latin1')), JFIF, SOS, Buffer.from([9]), EOI), jpeg(GPS, SOS, Buffer.from([7]), EOI), second]));
+  assert.equal(appended.ok, true);
+  assert.ok(!appended.bytes.includes(Buffer.from('GPSLatitude')));
+  assert.deepEqual(appended.bytes.subarray(-2), EOI);
+  assert.deepEqual(appended.dropped, ['APP2']);
+  const odd = I.stripJpeg(jpeg(JFIF, segment(0xf0, Buffer.from('extension')), segment(0xfe, Buffer.from('c')), segment(0xed, Buffer.from('p')), SOS, Buffer.from([1]), EOI));
+  assert.deepEqual(odd.dropped.sort(), ['0xf0', 'APP13', 'COM']);
+  // what is kept: frames, tables, restart interval, the three application kinds
+  const kept = I.stripJpeg(jpeg(JFIF, segment(0xdb, Buffer.alloc(65)), segment(0xc0, Buffer.alloc(15)), segment(0xc4, Buffer.alloc(20)), segment(0xdd, Buffer.alloc(2)), segment(0xee, Buffer.from('Adobe\0', 'latin1')), SOS, Buffer.from([1]), EOI));
+  assert.deepEqual([kept.ok, markers(kept.bytes), kept.dropped], [true, [0xe0, 0xdb, 0xc0, 0xc4, 0xdd, 0xee, 0xda], []]);
+});
+
+test('the folder caps: a full folder refuses with a plain error, before anything is written', () => {
+  const rig = makeRig();
+  try {
+    const folder = path.join(rig.top, 'assets/imgs/hub');
+    fs.mkdirSync(folder, { recursive: true });
+    const real = I.IMAGE_LIMITS.folderFiles;
+    assert.equal(I.folderFull(folder, 100), false);
+    for (let i = 0; i < 3; i++) fs.writeFileSync(path.join(folder, `${sha(String(i))}.jpg`), 'x'.repeat(10));
+    assert.equal(I.folderFull(folder, I.IMAGE_LIMITS.folderBytes), true, 'by bytes');
+    assert.equal(I.folderFull(folder, 10), false);
+    assert.equal(real, 2000);
+    const settings = { image_folder: folder, image_url: '/assets/imgs/hub/', top: rig.top, folder: rig.folder };
+    const images = I.createImages({ settings: () => settings });
+    assert.equal(images.save(FAKE_SCAN).ok, true);
+  } finally { rig.done(); }
+});
+
+test('the hour\'s count survives a restart (kept in a file); the cleanup reads nested notes, other folders of the site and held drafts', () => {
+  const rig = makeRig();
+  try {
+    const folder = path.join(rig.top, 'assets/imgs/hub');
+    const state = path.join(rig.out, 'images.json');
+    const settings = { image_folder: folder, image_url: '/assets/imgs/hub/', top: rig.top, folder: rig.folder };
+    const one = I.createImages({ settings: () => settings, stateFile: state });
+    for (let i = 0; i < 3; i++) assert.equal(one.save(Buffer.concat([FAKE_SCAN.subarray(0, FAKE_SCAN.length - 2), Buffer.from(String(i)), EOI])).ok, true);
+    const again = I.createImages({ settings: () => settings, stateFile: state });
+    assert.equal(JSON.parse(fs.readFileSync(state, 'utf8')).times.length, 3);
+    // (forty more in the new instance: the 3 already counted leave room for 37)
+    let ok = 0;
+    for (let i = 10; i < 60; i++) if (again.save(Buffer.concat([FAKE_SCAN.subarray(0, FAKE_SCAN.length - 2), Buffer.from(String(i)), EOI])).ok) ok++;
+    assert.equal(ok, I.IMAGE_LIMITS.perHour - 3);
+    // the cleanup
+    fs.rmSync(folder, { recursive: true, force: true }); fs.mkdirSync(folder, { recursive: true });
+    const mk = label => { const n = `${sha(label)}.jpg`; const f = path.join(folder, n); fs.writeFileSync(f, label); const t = new Date(Date.now() - 90 * 86_400_000); fs.utimesSync(f, t, t); return n; };
+    const lone = mk('lone'), nested = mk('nested'), page = mk('page'), held = mk('held');
+    fs.mkdirSync(path.join(rig.folder, 'deep/er'), { recursive: true });
+    fs.writeFileSync(path.join(rig.folder, 'deep/er/a.md'), `![](/assets/imgs/hub/${nested})`);
+    fs.mkdirSync(path.join(rig.top, '_pages'), { recursive: true });
+    fs.writeFileSync(path.join(rig.top, '_pages/p.html'), `<img src="/assets/imgs/hub/${page}">`);
+    assert.deepEqual(I.cleanupImages({ folder, top: rig.top, notesFolder: rig.folder, heldText: () => JSON.stringify([{ msgs: [{ text: `![](/assets/imgs/hub/${held})` }] }]) }), [lone]);
+    // drafts that cannot be read: nothing is deleted
+    assert.deepEqual(I.cleanupImages({ folder, top: rig.top, notesFolder: rig.folder, heldText: () => { throw new Error('x'); } }), []);
+  } finally { rig.done(); }
+});
