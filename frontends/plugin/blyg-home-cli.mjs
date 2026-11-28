@@ -31,6 +31,8 @@ export const EXAMPLE = Object.freeze({
   env_pass: ['BLYG_CHECKER'],
   // the owner's local preview site (it serves the working branch's drafts); the drawer shows a picture of the draft from it
   preview_url: 'http://127.0.0.1:4000{permalink}',
+  // (optional) where the Hub's "Add image" saves a picture: a folder inside your site checkout; without it the button is not offered
+  image_folder: '/path/to/your/blog/assets/imgs/hub',
   preview_selector: 'article',
   preview_theme_attribute: 'data-theme',
   commands: {

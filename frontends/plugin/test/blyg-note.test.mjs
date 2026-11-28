@@ -944,3 +944,20 @@ test('a stand-alone post keeps an agent passage as its box, and still names noth
   assert.match(r.text, /Before\.\n\n\[TK\] say hello \[=\]Hello, reader\.\[\/TK\]\n\nAfter\./);
   assert.match(r.text, /blyg_generated:/);
 });
+
+// The Hub's pictures (hub-image.mjs): the whole short post, with the setting's image address in `home`.
+test('a stand-alone post with a Hub picture: the line is in the note as typed, with blank lines around it; without the setting the same post is refused', () => {
+  const hash = 'c'.repeat(64);
+  const text = `# A day out\n\nBefore the picture.\n![The bay &amp; the pier](/assets/imgs/hub/${hash}.jpg)\nAfter it.`;
+  const page = { url: `${ORIGIN}hub/written-here`, title: 'Posts written from the Hub', threads: [{ id: 't1', quote: '', msgs: [mine(text)] }] };
+  const on = N.renderShortNote({ page, threads: page.threads, home: { ...HOME, image_url: '/assets/imgs/hub/' }, now: NOW, slug: 'a-day-out' });
+  assert.equal(on.ok, true, JSON.stringify(on));
+  assert.ok(on.text.includes(`Before the picture.\n\n![The bay &amp; the pier](/assets/imgs/hub/${hash}.jpg)\n\nAfter it.`), on.text);
+  const off = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 'a-day-out' });
+  assert.equal(off.ok, false);
+  assert.match(JSON.stringify(off), /images are not supported/);
+  const hostile = { ...page, threads: [{ id: 't1', quote: '', msgs: [mine(`Words.\n\n![<script>alert(1)</script>](/assets/imgs/hub/${hash}.jpg)`)] }] };
+  const bad = N.renderShortNote({ page: hostile, threads: hostile.threads, home: { ...HOME, image_url: '/assets/imgs/hub/' }, now: NOW, slug: 's' });
+  assert.equal(bad.ok, false);
+  assert.match(JSON.stringify(bad), /image caption may not hold/);
+});

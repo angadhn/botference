@@ -73,6 +73,7 @@ import { createQueue } from './blyg-queue.mjs';
 import { createHubLink, HUB_LINK_REPLIES_FILE, HUB_COMPOSE_TITLE, composeUrlOf } from './hub-link.mjs';
 import { validateClippings, listClippings, findClipping, passageInClipping, passageOfClipping, clippingPublishable } from './clippings.mjs';
 import { createSpeech } from './hub-speech.mjs';
+import { createImages } from './hub-image.mjs';
 import { secretsDir } from '../shared/secrets.mjs';
 import { validateHome, storable, minimalEnv } from './blyg-home.mjs';
 import { blygHomePage } from './blyg-home-page.mjs';
@@ -3363,6 +3364,8 @@ const hubLinkPageBusy = url => blygQueue.view().entries.some(x => ['queued', 'fi
 const hubLink = createHubLink({
   // speech for the Hub's reply box (hub-speech.mjs): contained ffmpeg and whisper-cli, jobs in memory only; off when a tool is missing
   speech: createSpeech({ log: line => console.log(`hub-link: ${line}`) }),
+  // pictures for the Hub's reply box (hub-image.mjs): saved into the site's `image_folder` (blyg-home); off when the setting names none
+  images: createImages({ settings: () => { const v = validateHome(store.readConfig().blyg_home); return v.ok ? v.settings : null; }, log: line => console.log(`hub-link: ${line}`) }),
   keyDir: secretsDir(),
   repliesFile: path.join(store.DIR, HUB_LINK_REPLIES_FILE),
   bind: ({ post, quote }) => bindVerified({ page_url: post.page, id: post.id, origin: post.origin, quote, source: 'hub' }),

@@ -40,6 +40,7 @@ ${row('done marker', s.published_marker || '(none)')}
 ${row('passed to commands', (s.env_pass || []).join(' ') || '(nothing beyond the minimal environment)')}
 ${row('preview address', s.preview_url || '(none: no picture of the draft)')}
 ${row('preview element', s.preview_selector || 'article')}
+${row('image folder (Add image in the Hub)', s.image_folder || '(none: the Hub offers no Add image)')}
 ${row('preview theme attribute', s.preview_theme_attribute || '(none: light)')}
 ${PAGE_COMMANDS.map(k => row(`command: ${k}`, cmds[k] ? JSON.stringify(cmds[k]) : '(not set)')).join('\n')}
 </table>

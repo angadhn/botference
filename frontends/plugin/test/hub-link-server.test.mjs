@@ -84,7 +84,7 @@ function send(base, route, body, { key = keyNow(), headers = {}, method = 'POST'
 }
 const postOf = (id, page = `${ORIGIN}${PAGES[id]}`) => ({ page, origin: ORIGIN, id, version: 1 });
 // (the JSON routes; speech has its own walk in hub-link-speech.test.mjs, and is on only where its tools are)
-const JSON_ROUTES = Object.keys(L.HUB_LINK_ROUTES).filter(r => !['transcribe', 'transcript'].includes(r));
+const JSON_ROUTES = Object.keys(L.HUB_LINK_ROUTES).filter(r => !['transcribe', 'transcript', 'image'].includes(r));
 const reply = (base, rid, extra = {}) => send(base, 'reply', { rid, post: postOf(A), quote: SAYS[A], comment: 'My reply from the phone.', intent: 'draft', ...extra });
 const status = async (base, rid) => (await send(base, 'status', { rids: [rid] })).json.replies[0];
 // (GET /page answers the record itself, as the owner on this machine; an address with no record has no `url`)
@@ -113,7 +113,7 @@ await test('ping: the link version and the publish setting, nothing else', async
   const r = await send(S, 'ping', {});
   assert.equal(r.status, 200, r.body);
   assert.ok(['on', 'off'].includes(r.json.speech), 'whether speech is on (its tools are on this machine or not)');
-  assert.deepEqual(r.json, { ok: true, version: 'v1', publish: 'drafts-only', key_id: keyNow().key_id, speech: r.json.speech });
+  assert.deepEqual(r.json, { ok: true, version: 'v1', publish: 'drafts-only', key_id: keyNow().key_id, speech: r.json.speech, images: 'off' });  // (no image folder in this rig's site setting)
 });
 
 await test('EVERY ROUTE refuses: a wrong key, a stale timestamp, a replayed nonce, a body not the one signed, an Origin, a GET, a big body, no JSON type', async () => {

@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
+import { checkImageFolder } from './hub-image.mjs';
 import { checkTemplate, DEFAULT_TEMPLATE, ESCAPES, DEFAULT_ESCAPE, validTimezone } from './blyg-note.mjs';
 
 // ---- the limits, stated once ---------------------------------------------------
@@ -274,8 +275,12 @@ export function validateHome(raw, { env = process.env } = {}) {
   // its own setting, never the model set for /tk
   const clModel = r.changelog_model === undefined || r.changelog_model === null || r.changelog_model === '' ? DEFAULT_CHANGELOG_MODEL : r.changelog_model;
   if (typeof clModel !== 'string' || !/^[\w.][\w.-]{0,63}$/.test(clModel)) errors.push('changelog_model must be a model name such as “claude-haiku-5-5”');
+  // `image_folder` (optional): where the Hub's "Add image" saves a picture: a folder INSIDE the site checkout (hub-image.mjs); not set: images are off
+  const imageRaw = r.image_folder === undefined || r.image_folder === null ? '' : r.image_folder;
+  const img = checkImageFolder(imageRaw, top);
+  if (!img.ok) errors.push(img.error);
   if (errors.length) return { ok: false, errors, settings: null };
-  return { ok: true, errors: [], settings: { folder, top, filename, template, escape, timezone, env_pass: pass, commands, confirm, plan_guard: guardRaw.slice(), published_marker: marker, preview_url: preview, preview_selector: selector, preview_theme_attribute: themeAttr, changelog_model: clModel } };
+  return { ok: true, errors: [], settings: { image_folder: img.folder, image_url: img.url, folder, top, filename, template, escape, timezone, env_pass: pass, commands, confirm, plan_guard: guardRaw.slice(), published_marker: marker, preview_url: preview, preview_selector: selector, preview_theme_attribute: themeAttr, changelog_model: clModel } };
 }
 
 /** The model asked for a new version's changelog line unless the setting names another (blyg-run CHANGELOG_FROM). */
@@ -283,10 +288,11 @@ export const DEFAULT_CHANGELOG_MODEL = 'claude-haiku-5-5';
 /** What is stored: only the fields the owner set, not the derived paths. */
 export const storable = raw => {
   const r = raw && typeof raw === 'object' ? raw : {};
-  const out = { folder: r.folder, filename: r.filename, template: r.template, escape: r.escape, timezone: r.timezone, env_pass: r.env_pass, commands: r.commands, confirm: r.confirm, plan_guard: r.plan_guard, published_marker: r.published_marker, preview_url: r.preview_url, preview_selector: r.preview_selector, preview_theme_attribute: r.preview_theme_attribute, changelog_model: r.changelog_model };
+  const out = { folder: r.folder, filename: r.filename, template: r.template, escape: r.escape, timezone: r.timezone, env_pass: r.env_pass, commands: r.commands, confirm: r.confirm, plan_guard: r.plan_guard, published_marker: r.published_marker, preview_url: r.preview_url, preview_selector: r.preview_selector, preview_theme_attribute: r.preview_theme_attribute, changelog_model: r.changelog_model, image_folder: r.image_folder };
   for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
   return out;
 };
+// (image_folder is left out too: no step of a run reads it; a picture is saved before any run, and the publish proof is the site's own)
 // (preview_url is left out of the fingerprint: it changes nothing that runs, and a run started before it was set may still show it;
 // so is the `link_targets` command, which no publish run ever runs)
 const runCommands = c => { const { link_targets: _catalogue, ...steps } = c || {}; return steps; };

@@ -36,6 +36,7 @@ import { createRequire } from 'node:module';
 import { ENTRY_STATES, OPEN_STATES } from './blyg-queue.mjs';
 import { isPublishableMsg, PROMPT_MODES } from './blyg-note.mjs';
 import { audioTypeOf, sniffAudio, SPEECH_LIMITS } from './hub-speech.mjs';
+import { IMAGE_LIMITS, IMAGE_TYPE, startsLikeJpeg } from './hub-image.mjs';
 import { pagesOf, bodyText } from './clippings.mjs';
 const CLIPPING_ID_RE = /^[0-9a-f]{16}$/;
 const TK_USED_WORDS = Object.freeze(['none', 'web', 'notes', 'both']);
@@ -144,6 +145,8 @@ export const HUB_LINK_ROUTES = Object.freeze({
   earlier: Object.freeze({ path: '/hub-link/earlier', does: 'the owner\'s published reply to a blyg post that a new reply can be added to' }),
   transcribe: Object.freeze({ path: '/hub-link/transcribe', does: 'starts turning a recording into text: a job', body: 'audio' }),
   transcript: Object.freeze({ path: '/hub-link/transcript', does: 'a speech job: pending, done with its text, or failed' }),
+  // a picture from the reply box's "Add image" (hub-image.mjs): the body is the JPEG itself; signed like a recording
+  image: Object.freeze({ path: '/hub-link/image', does: 'saves a picture into the site\'s image folder (metadata taken out) and answers its address for the markdown', body: 'image' }),
 });
 const ROUTE_BY_PATH = new Map(Object.entries(HUB_LINK_ROUTES).map(([name, r]) => [r.path, name]));
 
@@ -498,6 +501,8 @@ export const HUB_LINK_SAY = Object.freeze({
   'cannot-add-changed': 'Your earlier reply changed, so this was not added. Publish it as a new post, or discard it.',
   'audio-too-large': `The recording is too long to send: at most ${SPEECH_LIMITS.audioBytes} bytes (about 3 minutes).`,
   'not-audio': 'That is not a recording your computer can read (WebM, Ogg or MP4 audio).',
+  'image-too-large': `The picture is too large to send: at most ${IMAGE_LIMITS.bytes} bytes.`,
+  'not-image': 'That is not a JPEG picture your computer can read.',
   'passages-per-hour': 'Your computer has written as many agent passages for this post as it will in an hour. Try again later.',
 });
 
@@ -527,6 +532,8 @@ export function createHubLink(deps) {
   const holding = { replies: 0, presses: 0 };
   // speech is offered when the tools are on this machine (hub-speech SPEECH_GATES); the routes are 404 otherwise
   const speechGate = () => (deps.speech ? deps.speech.gate() : 'off');
+  // pictures are offered when the site setting names an image folder (hub-image.mjs createImages); the route is 404 otherwise
+  const imageGate = () => (deps.images ? deps.images.gate() : 'off');
   // the audio bodies being read before their signature can be checked (HUB_LINK_LIMITS.audioReading at once), and how long each may take
   const reading = { n: 0 };
   const audioReadMs = Number.isInteger(deps.audioReadMs) && deps.audioReadMs > 0 ? deps.audioReadMs : HUB_LINK_LIMITS.audioReadMs;
@@ -665,13 +672,19 @@ export function createHubLink(deps) {
 
   // (each answers { status, body }; a rid in flight is waited for, so two copies of one request do the work once)
   const routes = {
-    async ping(_data, key) { return { status: 200, body: { ok: true, version: HUB_LINK_VERSION, publish: key.publish, key_id: key.key_id, speech: speechGate() } }; },
+    async ping(_data, key) { return { status: 200, body: { ok: true, version: HUB_LINK_VERSION, publish: key.publish, key_id: key.key_id, speech: speechGate(), images: imageGate() } }; },
 
     // ---- speech: a job, answered at once; the recording is in the job only (hub-speech.mjs) ----
     async transcribe(audio, _key, container) {
       const r = deps.speech.submit({ audio, container });
       if (!r.ok) return { status: r.status, body: { ok: false, error: r.error, ...(r.limit ? { limit: r.limit } : {}) } };
       return { status: 200, body: { ok: true, job: r.job, state: 'pending' } };
+    },
+    // ---- a picture: the bytes are filtered and saved in the site's image folder; the answer is the address to put in the markdown ----
+    async image(bytes) {
+      const r = deps.images.save(bytes);
+      if (!r.ok) return { status: r.status, body: { ok: false, error: r.error, ...(r.limit ? { limit: r.limit } : {}) } };
+      return { status: 200, body: { ok: true, path: r.path, bytes: r.size, stripped: r.stripped } };
     },
     // WHAT A NEW REPLY TO THIS BLYG POST CAN BE ADDED TO: the plugin's own answer (0 or 1 post: the newest published from the post's
     // page, while it can take a comment). Public facts only: its id, address, title, first date, version.
@@ -843,17 +856,25 @@ export function createHubLink(deps) {
     });
   }
 
-  /** A recording: its type on the allow-list, its size under the cap, its type and length signed with its bytes, its first bytes the
-   *  container its type names. The bytes go to the job and nowhere else. */
+  // The two routes whose body is not JSON (`body` in HUB_LINK_ROUTES): what each takes, one table.
+  //   audio  a recording (speech): its type on AUDIO_TYPES, at most SPEECH_LIMITS.audioBytes, the container its first bytes show
+  //   image  a picture: exactly image/jpeg, at most IMAGE_LIMITS.bytes, the first bytes of a JPEG
+  const BINARY = {
+    audio: { cap: SPEECH_LIMITS.audioBytes, kind: 'audio', typeRefusal: 'audio-type', containerOf: t => audioTypeOf(t), sniff: sniffAudio, on: () => speechGate() === 'on', notSay: 'not-audio', bigSay: 'audio-too-large' },
+    image: { cap: IMAGE_LIMITS.bytes, kind: 'image', typeRefusal: 'image-type', containerOf: t => (String(t).trim().toLowerCase() === IMAGE_TYPE ? 'jpeg' : ''), sniff: b => (startsLikeJpeg(b) ? 'jpeg' : ''), on: () => imageGate() === 'on', notSay: 'not-image', bigSay: 'image-too-large' },
+  };
+  /** A recording or a picture: its type on the allow-list, its size under the cap, its type and length signed with its bytes, its first
+   *  bytes the container its type names. The bytes go to the job (or the image folder) and nowhere else. */
   async function handleAudio(req, res, url, name, key, refuse) {
+    const spec = BINARY[HUB_LINK_ROUTES[name].body];
     // BEFORE ANY BYTE IS READ: the headers' form, the key id and the time (the same 401 whether speech is on or off)
     const pre = preCheck({ headers: req.headers, key, nowSec: Math.floor(ms() / 1000) });
     if (!pre.ok) { req.resume(); say(`refused ${pre.why}`); res.writeHead(401, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'refused' })); try { req.destroy(); } catch { /* gone */ } return; }
     const type = String(req.headers['content-type'] || '');
-    const container = audioTypeOf(type);
-    if (!container) return refuse(415, 'audio-type');
+    const container = spec.containerOf(type);
+    if (!container) return refuse(415, spec.typeRefusal);
     const declared = Number(req.headers['content-length']);
-    const tooLarge = (close = true) => { say('refused audio-too-large'); res.writeHead(413, { ...JSON_HEAD, ...(close ? { connection: 'close' } : {}) }).end(JSON.stringify({ ok: false, error: 'too-large', say: HUB_LINK_SAY['audio-too-large'] })); };
+    const tooLarge = (close = true) => { say(`refused ${spec.kind}-too-large`); res.writeHead(413, { ...JSON_HEAD, ...(close ? { connection: 'close' } : {}) }).end(JSON.stringify({ ok: false, error: 'too-large', say: HUB_LINK_SAY[spec.bigSay] })); };
     // THE SIGNATURE BEFORE THE BODY: over the body hash and the length the request names (only a key holder reaches a read slot);
     // the body read must then be exactly that length with exactly that hash
     const named = String(req.headers[BODY_HASH_HEADER] || '');
@@ -868,22 +889,22 @@ export function createHubLink(deps) {
       if (!sigOk || n !== 'fresh') { req.resume(); say(`refused ${sigOk ? 'replayed-nonce' : 'bad-sig'}`); res.writeHead(401, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'refused' })); try { req.destroy(); } catch { /* gone */ } return; }
     }
     // (a key holder's body declared too large but not absurdly: the body is drained and thrown away, so the Hub reads the 413 rather than a reset)
-    if (Number.isFinite(declared) && declared > SPEECH_LIMITS.audioBytes) {
-      if (declared > 2 * SPEECH_LIMITS.audioBytes) { tooLarge(); try { req.destroy(); } catch { /* gone */ } return; }
+    if (Number.isFinite(declared) && declared > spec.cap) {
+      if (declared > 2 * spec.cap) { tooLarge(); try { req.destroy(); } catch { /* gone */ } return; }
       req.resume(); return tooLarge(false);
     }
     // AT MOST 2 BODIES are read at once (each from a key holder), each within its deadline
-    if (reading.n >= HUB_LINK_LIMITS.audioReading) { say('limited audio-reading'); res.writeHead(429, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'limit', limit: 'audio-reading' })); try { req.destroy(); } catch { /* gone */ } return; }
+    if (reading.n >= HUB_LINK_LIMITS.audioReading) { say(`limited ${spec.kind}-reading`); res.writeHead(429, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'limit', limit: 'audio-reading' })); try { req.destroy(); } catch { /* gone */ } return; }
     reading.n++;
     let got;
-    try { got = await readRaw(req, SPEECH_LIMITS.audioBytes, audioReadMs); } finally { reading.n--; }
-    if (got.late) { say('refused audio-late'); res.writeHead(408, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'too-slow' })); try { req.destroy(); } catch { /* gone */ } return; }
+    try { got = await readRaw(req, spec.cap, audioReadMs); } finally { reading.n--; }
+    if (got.late) { say(`refused ${spec.kind}-late`); res.writeHead(408, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'too-slow' })); try { req.destroy(); } catch { /* gone */ } return; }
     if (got.over) { tooLarge(); try { req.destroy(); } catch { /* gone */ } return; }
     if (got.body.length !== declared || bodyHashOf(got.body) !== named) { say('refused body-not-as-signed'); return answer(res, 401, { ok: false, error: 'refused' }); }
-    // (speech off: said only to a caller that signed)
-    if (speechGate() !== 'on') return answer(res, 404, { ok: false, error: 'not found' });
+    // (speech or images off: said only to a caller that signed)
+    if (!spec.on()) return answer(res, 404, { ok: false, error: 'not found' });
     if (!perMinute.take()) { say('limited requests-per-minute'); return answer(res, 429, { ok: false, error: 'limit', limit: 'requests-per-minute' }); }
-    if (sniffAudio(got.body) !== container) { say('refused audio-bytes'); return answer(res, 415, { ok: false, error: 'not-audio', say: HUB_LINK_SAY['not-audio'] }); }
+    if (spec.sniff(got.body) !== container) { say(`refused ${spec.kind}-bytes`); return answer(res, 415, { ok: false, error: spec.notSay, say: HUB_LINK_SAY[spec.notSay] }); }
     try {
       const r = await routes[name](got.body, key, container);
       return answer(res, r.status, r.body);
@@ -902,7 +923,7 @@ export function createHubLink(deps) {
     // a browser page always sends an Origin on a POST; the Hub's server never does
     if (req.headers.origin !== undefined) return refuse(403, 'origin-header');
     if (String(req.url || '').includes('?')) return refuse(400, 'query');
-    if (HUB_LINK_ROUTES[name].body === 'audio') return handleAudio(req, res, url, name, key, refuse);
+    if (HUB_LINK_ROUTES[name].body === 'audio' || HUB_LINK_ROUTES[name].body === 'image') return handleAudio(req, res, url, name, key, refuse);
     if (!isJson(req.headers['content-type'])) return refuse(415, 'content-type');
     const declared = Number(req.headers['content-length']);
     // THE one length limit: the encoded body. Said in a fixed sentence the Hub can show as it is.

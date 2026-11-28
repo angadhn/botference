@@ -588,13 +588,41 @@ export const PASSAGE_TK_SAY = 'the passage you quoted holds letters your site ke
 const HAS_TK_MARK = /\[\/?tk\]/i;
 export const hasTkMark = t => HAS_TK_MARK.test(String(t || ''));
 
+// ---- the Hub's pictures ----------------------------------------------------------------------------------------------------------
+// `![caption](/assets/imgs/hub/<64 hex>.jpg)` on a line of its own. The caption is the picture's visible caption on the site (the site's
+// `![caption](path)` rule) and its alt text, so it is the owner's plain words: the Hub writes the characters markdown, HTML or Liquid
+// read as references (`&lt;`, `&quot;`, `&#39;`, `&#123;` ...) and turns brackets into parentheses; here, whatever is typed by hand must
+// be that or it is refused with a sentence, never written.
+export const IMAGE_CAPTION_MAX = 300;
+const CAPTION_ENTITY = '&(?:amp|lt|gt|quot|#39|#92|#96|#123|#124|#125);';
+const CAPTION_RE = new RegExp('^(?:[^\\u0000-\\u001f\\u007f\\[\\]"<>|\\\\{}`&]|' + CAPTION_ENTITY + ')*$');
+/** -> '' when `caption` is one the site takes as it stands, else the sentence. */
+export function imageCaptionProblem(caption) {
+  const plain = String(caption).replace(new RegExp(CAPTION_ENTITY, 'g'), '.');
+  if (plain.length > IMAGE_CAPTION_MAX) return `an image caption is longer than ${IMAGE_CAPTION_MAX} characters`;
+  if (!CAPTION_RE.test(caption)) return 'an image caption may not hold brackets, double quotes, angle brackets, bars, braces, backticks or a bare & (the Hub’s Add image writes them safely); change it or remove it';
+  return '';
+}
+const escapeRegExp = t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function holdImageLines(text, imageUrl, scopes, blocked) {
+  const mask = Grammar.codeMask(text);
+  const re = new RegExp('^!\\[([^\\n]*)\\]\\(' + escapeRegExp(imageUrl) + '[0-9a-f]{64}\\.jpg\\)[ \\t]*$', 'gm');
+  return text.replace(re, (line, caption, offset) => {
+    if (mask[offset]) return line;
+    const why = imageCaptionProblem(caption);
+    if (why) { blocked.push(why); return ''; }
+    scopes.push(`\n\n${line.trim()}\n\n`);
+    return `${HOLD_A}${scopes.length - 1}${HOLD_B}`;
+  });
+}
+
 /**
  * One of the owner's messages as plain text for the post.
  * → { text, blocked: [sentence…], generated: [entry…] }. A gap an agent wrote (or the owner pasted from an agent's tool) is
  * written as the site's generated passage (above); a gap that is pending, failed or unknown BLOCKS. A bracket mark the owner typed
  * as words (`[TK]`) is no longer a gap: it is written so the site shows the letters and never reads it as its own grammar.
  */
-export function ownText(msg, { escape = 'liquid', forms = null, deliberate = [], bareOff = false, titleFrom = 'words' } = {}) {
+export function ownText(msg, { escape = 'liquid', forms = null, deliberate = [], bareOff = false, titleFrom = 'words', imageUrl = '' } = {}) {
   const blocked = [];
   const generated = [];
   let src = clean(withRuns(stripMore(msg.text), msg.runs, null)).replace(/[\ue000\ue001]/g, '');
@@ -640,6 +668,9 @@ export function ownText(msg, { escape = 'liquid', forms = null, deliberate = [],
   });
   out += Grammar.unescape(src.slice(at));
   out = out.replace(/\n{3,}/g, '\n\n').trim();
+  // THE HUB'S PICTURES (hub-image.mjs): a line that is exactly `![caption](<image folder address><sha256>.jpg)` is held like a gap's box
+  // and written back as it is; any other image is still refused below (linkProblems)
+  if (imageUrl) out = holdImageLines(out, imageUrl, scopes, blocked);
   // the owner's own words: a TK mark outside code is refused (OWNER_TK_SAY); it is also written as the letters (a character reference),
   // never read as the site's grammar, should a caller write the text anyway
   { const mask = Grammar.codeMask(out);
@@ -975,7 +1006,7 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     const heads = writtenPassagesIn(keep.before);
     forms = { kept, count: heads.length, heads, next: 0, moveFormat: keep.moveFormat || null };
   }
-  const opts = { escape, forms, deliberate, bareOff };
+  const opts = { escape, forms, deliberate, bareOff, imageUrl: home && typeof home.image_url === 'string' ? home.image_url : '' };
   if (!page || !Array.isArray(threads) || !threads.length) return { ok: false, error: 'nothing to publish' };
   if (threads.length > LIMITS.comments) return { ok: false, error: `at most ${LIMITS.comments} comments can go in one post` };
   const item = blygItemOf(page);

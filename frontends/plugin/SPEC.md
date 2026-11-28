@@ -14428,6 +14428,46 @@ sending. It files nothing and publishes nothing.
   whisper on the GPU and on the CPU) the owner's home, /etc/hosts, a scratch file and the whole Cellar stay refused, and a real clip
   still transcribes.
 
+### Images from the Hub's reply box (2026-11-27, `hub-image.mjs`, `image`, `image_folder`)
+The owner presses **Add image** in the Hub's reply box, chooses a photo, may type a caption, and the picture goes into the text as a
+markdown image line. The page (blog repo, `reply-page.mjs`) draws it on a canvas (at most 1600 px, JPEG quality 0.85: no metadata, HEIC
+decoded by the browser, orientation applied) and uploads it to the Hub's function, which checks the size and the first bytes and relays it
+signed. This side never trusts the browser.
+- THE SETTING: `image_folder` in the site setting (`blyg_home`), an absolute folder INSIDE the site checkout (`checkImageFolder`: an existing
+  part of it is resolved through links first, so a link out of the checkout is refused; names of letters, digits, space, `_ . -` only, none
+  starting with a dot, not the checkout itself, not `.git`). It need not exist yet. Not set: images are off, and the Hub hides the button.
+  It is not part of the run's fingerprint (no step of a run reads it). `botference blyg-home example` shows it. The address a picture has
+  on the site, `image_url`, is derived from it (`/assets/imgs/hub/`); the example blog's publish script accepts exactly that folder.
+- `ping` says `images: 'on' | 'off'` (on when the setting is valid and names the folder). Off: `image` is 404, said only to a caller whose
+  signature is good.
+- `image`: the body is the picture's bytes; the same binary-body walk as `transcribe` (one table, `BINARY` in `hub-link.mjs`): the type must
+  be exactly `image/jpeg` (415), at most `IMAGE_LIMITS.bytes` (3,000,000; 413), the signed string gains the type and the length, the hash
+  and length in headers so the whole signature is checked BEFORE the body is read, at most 2 bodies read at once (shared with audio), each
+  within 20 s, then images on (404), the request limit, and the first bytes a JPEG's (415 `not-image`). Answers `{ ok, path, bytes, stripped }`,
+  `path` the site-relative address for the markdown. Refusals from the saving: 415 `not-jpeg` / `damaged`, 413, 409 `folder-outside` /
+  `name-taken`, 429 `images-per-hour` (40 an hour), 404 `images-off`.
+- THE FILTER (`stripJpeg`, pure JavaScript, nothing is run): the file is read segment by segment. Dropped: every APPn except JFIF (APP0), an
+  ICC profile (APP2 `ICC_PROFILE`) and Adobe's colour tag (APP14), so Exif and its GPS and thumbnail, XMP, APP13 (Photoshop/IPTC), MPF, and
+  every comment (COM); whatever follows the end of image is cut off. A file that is not a whole JPEG (a length off the end, no scan, no end of
+  image) is refused. The image data is never touched.
+- THE FILE: saved as `<sha256 of the bytes as saved>.jpg`, mode 0644, written to a temporary name and linked into place (never over a file:
+  a file already there with the same bytes is the answer; with other bytes `name-taken`); the folder is resolved again at the save and must lie
+  inside the checkout (nothing is created before that check). The log says the hash's first 8 characters, the size and the dropped segment
+  names; never the bytes.
+- THE NOTE: a line that is exactly `![caption](<image_url><64 hex>.jpg)` is a picture of the owner's short post (`ownText`, `imageUrl`); the
+  caption is the figure's visible caption and its alt text on the example site. It is held like a gap's box, so nothing re-escapes it. The caption
+  is plain words: bare `[ ] " < > | \ { } `` ` ``  and `&` are refused with a sentence (the Hub writes them as `&amp; &lt; &gt; &quot; &#92; &#96;
+  &#123; &#125; &#124;` and turns brackets into parentheses), at most 300 characters. Any other image (another folder, another host, mid-line,
+  without the setting) is refused as before ("images are not supported in a short post yet").
+- CLEANUP (`cleanupImages`, run after each save): a file of that folder that git does not track, is older than 30 days (`keepDays`; a draft
+  that has not been published may still hold the line, and a draft's text is not a note yet) and is named by no `.md` file in the notes
+  folder, is deleted. An unpublished upload is therefore only ever a file in the working tree: the example site's publish script commits only
+  the pictures a note names (`--stage-note`) and its `--only-note` proof accepts only those.
+- Tests (`hub-link-image`, 11): the filter on a hand-built Exif GPS block, APP13, comment, XMP and trailing bytes; refusals of what is not a
+  whole JPEG; a real JPEG (macOS `sips`) saved without APP1/APP13/COM and still decoding at the same size; confinement (outside, a link out,
+  a link made after the setting, `.git`, relative, `..`), no overwrite, the setting through `validateHome`, the cleanup, the signed route over
+  HTTP (ping on/off, 404, 415, 401 on a changed type or hash, 403 with an Origin, 413, the hour), and the note text and caption rules.
+
 ### Add to my earlier reply, from the Hub (2026-11-26, `earlier`, `reply.add_to`, `publish.as`)
 Replying from the Hub to a post the owner has already replied to, the owner may add the new reply to that earlier post (it goes out
 as the post's next version) instead of a new post. This is the plugin's own "Add to your earlier post" (blyg-run `earlierPostFor`,

@@ -998,7 +998,7 @@ export function createPublisher(deps) {
     const out = [];
     for (const m of snap.msgs) {
       const live = own.find(x => String(x.ts) === String(m.ts));
-      if (!live || hashOf(ownText(live, { escape }).text) !== m.sha) return null;
+      if (!live || hashOf(ownText(live, { escape, imageUrl: home.ok ? home.settings.image_url : '' }).text) !== m.sha) return null;
       out.push(live);
     }
     return out;
